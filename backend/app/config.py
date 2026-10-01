@@ -61,6 +61,15 @@ class Settings:
     ai_max_findings: int = field(default_factory=lambda: _get_int("CODEAUDIT_AI_MAX_FINDINGS", 25))
     ai_context_lines: int = field(default_factory=lambda: _get_int("CODEAUDIT_AI_CONTEXT_LINES", 15))
 
+    # --- Remediation tuning (Phase 3: bounded fix generation) ---
+    fix_max_context_chars: int = field(default_factory=lambda: _get_int("CODEAUDIT_FIX_MAX_CONTEXT_CHARS", 12_000))
+    fix_max_file_chars: int = field(default_factory=lambda: _get_int("CODEAUDIT_FIX_MAX_FILE_CHARS", 4_000))
+    fix_context_lines: int = field(default_factory=lambda: _get_int("CODEAUDIT_FIX_CONTEXT_LINES", 20))
+    fix_temperature: float = field(default_factory=lambda: _get_float("CODEAUDIT_FIX_TEMPERATURE", 0.2))
+    fix_max_tokens: int = field(default_factory=lambda: _get_int("CODEAUDIT_FIX_MAX_TOKENS", 1_500))
+    fix_max_changes: int = field(default_factory=lambda: _get_int("CODEAUDIT_FIX_MAX_CHANGES", 5))
+    max_remediations_per_request: int = field(default_factory=lambda: _get_int("CODEAUDIT_MAX_REMEDIATIONS_PER_REQUEST", 3))
+
     # --- GitHub ---
     github_token: str = field(default_factory=lambda: os.environ.get("GITHUB_TOKEN", ""))
 

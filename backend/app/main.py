@@ -13,9 +13,22 @@ from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from app.config import settings
-from models.schemas import AnalysisRequest, AnalysisResult, ErrorResponse
+from models.schemas import (
+    AnalysisRequest,
+    AnalysisResult,
+    BatchRemediationRequest,
+    ErrorResponse,
+    RemediationRequest,
+    RemediationResult,
+)
 from services import github_service, repository_scanner
 from services.orchestrator import AnalysisOrchestrator
+from services.remediation_engine import RemediationEngine
+from services.remediation_errors import (
+    RemediationError,
+    RemediationFindingNotFound,
+    SAFE_MESSAGES as REMEDIATION_SAFE_MESSAGES,
+)
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
@@ -34,6 +47,39 @@ app = FastAPI(
 )
 
 orchestrator = AnalysisOrchestrator()
+remediation_engine = RemediationEngine()
+
+
+@app.exception_handler(RemediationFindingNotFound)
+async def remediation_not_found_handler(
+    request: Request, exc: RemediationFindingNotFound
+) -> JSONResponse:
+    logger.warning("Remediation finding not found for %s: %s", request.url.path, exc)
+    return JSONResponse(
+        status_code=status.HTTP_404_NOT_FOUND,
+        content=ErrorResponse(
+            error={
+                "code": exc.code,
+                "message": REMEDIATION_SAFE_MESSAGES.get(exc.code, exc.code),
+            }
+        ).model_dump(mode="json"),
+    )
+
+
+@app.exception_handler(RemediationError)
+async def remediation_error_handler(
+    request: Request, exc: RemediationError
+) -> JSONResponse:
+    logger.warning("Remediation error for %s: %s", request.url.path, exc)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content=ErrorResponse(
+            error={
+                "code": exc.code,
+                "message": REMEDIATION_SAFE_MESSAGES.get(exc.code, exc.code),
+            }
+        ).model_dump(mode="json"),
+    )
 
 
 @app.exception_handler(github_service.GitHubError)
@@ -101,3 +147,45 @@ def analyze(request: AnalysisRequest) -> AnalysisResult:
         repo_dir = tmp / "repo"
         orchestrator.fetch_repo(request.repository_url, repo_dir)
         return orchestrator.run(request.repository_url, repo_dir)
+
+
+@app.post("/remediate", response_model=RemediationResult)
+def remediate(request: RemediationRequest) -> RemediationResult:
+    """Propose and deterministically verify a fix for one finding.
+
+    FIND -> FIX -> VERIFY: Nemotron proposes a minimal patch, the patch
+    engine validates and applies it inside an isolated temporary workspace,
+    and the deterministic analyzer verifies the outcome. The original
+    repository is never modified.
+    """
+    github_service.validate_github_url(request.repository_url)
+    with github_service.temporary_repo_dir() as tmp:
+        repo_dir = tmp / "repo"
+        orchestrator.fetch_repo(request.repository_url, repo_dir)
+        before = orchestrator.run(request.repository_url, repo_dir)
+        return remediation_engine.remediate_finding(
+            request.finding_id, repo_dir, before
+        )
+
+
+@app.post("/remediate/batch", response_model=list[RemediationResult])
+def remediate_batch(request: BatchRemediationRequest) -> list[RemediationResult]:
+    """Remediate several findings, each independently against the original
+    repository. Hard-capped by CODEAUDIT_MAX_REMEDIATIONS_PER_REQUEST."""
+    cap = settings.max_remediations_per_request
+    if len(request.finding_ids) > cap:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"finding_ids exceeds the per-request limit of {cap} "
+                "(CODEAUDIT_MAX_REMEDIATIONS_PER_REQUEST)"
+            ),
+        )
+    github_service.validate_github_url(request.repository_url)
+    with github_service.temporary_repo_dir() as tmp:
+        repo_dir = tmp / "repo"
+        orchestrator.fetch_repo(request.repository_url, repo_dir)
+        before = orchestrator.run(request.repository_url, repo_dir)
+        return remediation_engine.remediate_findings(
+            request.finding_ids, repo_dir, before
+        )

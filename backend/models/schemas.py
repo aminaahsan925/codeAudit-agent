@@ -7,9 +7,9 @@ the codebase. Pydantic models define the API contract.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
+from typing import List, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class Severity(str, Enum):
@@ -291,3 +291,163 @@ class ErrorDetail(BaseModel):
 
 class ErrorResponse(BaseModel):
     error: ErrorDetail
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — safe remediation (FIND -> FIX -> VERIFY)
+# ---------------------------------------------------------------------------
+
+
+class FixDecision(str, Enum):
+    """The model's verdict on whether it can propose a remediation."""
+
+    FIX = "fix"
+    CANNOT_FIX = "cannot_fix"
+
+
+class VerificationStatus(str, Enum):
+    """Deterministic outcome of verifying a proposed patch.
+
+    Only the verification engine assigns these — never the model. The engine
+    reruns the existing deterministic analyzers on the patched workspace and
+    compares BEFORE vs AFTER.
+    """
+
+    VERIFIED = "verified"
+    PARTIALLY_VERIFIED = "partially_verified"
+    NOT_VERIFIED = "not_verified"
+    PATCH_REJECTED = "patch_rejected"
+    NEW_ISSUE_INTRODUCED = "new_issue_introduced"
+    CANNOT_VERIFY = "cannot_verify"
+
+
+class RemediationStatus(str, Enum):
+    """Overall remediation outcome, returned by the remediation engine/API.
+
+    Extends the verification outcomes with AI-layer outcomes: the model may
+    be unavailable or fail, in which case the original analysis is preserved
+    and nothing is patched.
+    """
+
+    VERIFIED = "verified"
+    PARTIALLY_VERIFIED = "partially_verified"
+    NOT_VERIFIED = "not_verified"
+    PATCH_REJECTED = "patch_rejected"
+    NEW_ISSUE_INTRODUCED = "new_issue_introduced"
+    CANNOT_VERIFY = "cannot_verify"
+    UNAVAILABLE = "unavailable"
+    FAILED = "failed"
+
+
+class FixChange(BaseModel):
+    """One proposed source change, anchored to exact existing content.
+
+    Phase 3 v1 only modifies existing lines: every change must reference an
+    existing repository-relative file and a valid line range, and ``old_text``
+    must match the actual content at that range before anything is applied.
+    Arbitrary file creation/deletion is not representable.
+    """
+
+    file: str = Field(..., min_length=1, description="Repository-relative path, case-sensitive")
+    start_line: int = Field(..., ge=1)
+    end_line: int = Field(..., ge=1)
+    old_text: str = Field(..., min_length=1, description="Exact current text at the range")
+    new_text: str = Field(..., min_length=1, description="Replacement text (never empty: no deletions in v1)")
+
+    @field_validator("new_text")
+    @classmethod
+    def _new_text_must_not_be_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("new_text must not be blank (no deletions in v1)")
+        return v
+
+    @model_validator(mode="after")
+    def _range_must_be_ordered(self) -> "FixChange":
+        if self.end_line < self.start_line:
+            raise ValueError("end_line must be >= start_line")
+        return self
+
+
+class FixProposal(BaseModel):
+    """Structured remediation proposal. The model proposes; the system stamps
+    traceability fields (finding_id/provider/model/prompt_version) — the
+    model's own values for these are never trusted."""
+
+    finding_id: str = Field(..., min_length=1)
+    decision: FixDecision
+    reasoning: str = Field(..., min_length=1)
+    changes: list[FixChange] = Field(default_factory=list)
+    expected_effect: str = ""
+    verification_notes: str = ""
+    provider: str = ""
+    model: str = ""
+    prompt_version: str = ""
+
+    @model_validator(mode="after")
+    def _decision_matches_changes(self) -> "FixProposal":
+        if self.decision == FixDecision.CANNOT_FIX and self.changes:
+            raise ValueError("decision 'cannot_fix' must not carry changes")
+        if self.decision == FixDecision.FIX and not self.changes:
+            raise ValueError("decision 'fix' requires at least one change")
+        return self
+
+
+class AppliedChange(BaseModel):
+    """Record of one change the patch engine applied in the temp workspace."""
+
+    file: str
+    start_line: int
+    end_line: int
+    lines_changed: int
+    before: str = Field(..., description="Original text (bounded excerpt)")
+    after: str = Field(..., description="Patched text (bounded excerpt)")
+
+
+class RejectedChange(BaseModel):
+    """Record of one proposed change the patch engine refused to apply."""
+
+    file: str
+    start_line: int
+    end_line: int
+    reason: str = Field(..., description="Machine-readable rejection reason")
+
+
+class VerificationResult(BaseModel):
+    """Deterministic BEFORE/AFTER comparison for one remediated finding."""
+
+    status: VerificationStatus
+    original_finding_id: str
+    finding_present_before: bool
+    finding_present_after: bool
+    original_evidence_present_before: bool
+    original_evidence_present_after: bool
+    new_findings_introduced: list[str] = Field(
+        default_factory=list, description="Ids of verified findings introduced by the patch"
+    )
+    verified: bool = Field(..., description="True only when status == verified")
+    reason: str = ""
+
+
+class RemediationResult(BaseModel):
+    """Complete outcome of one FIND -> FIX -> VERIFY cycle."""
+
+    status: RemediationStatus
+    finding_id: str
+    proposal: Optional[FixProposal] = None
+    verification: Optional[VerificationResult] = None
+    changes_applied: list[AppliedChange] = Field(default_factory=list)
+    changes_rejected: list[RejectedChange] = Field(default_factory=list)
+    risk_before: Optional[RiskResult] = None
+    risk_after: Optional[RiskResult] = None
+    error_code: Optional[str] = None
+    error_message: Optional[str] = None
+
+
+class RemediationRequest(BaseModel):
+    repository_url: str = Field(..., min_length=1)
+    finding_id: str = Field(..., min_length=1)
+
+
+class BatchRemediationRequest(BaseModel):
+    repository_url: str = Field(..., min_length=1)
+    finding_ids: List[str] = Field(..., min_length=1)

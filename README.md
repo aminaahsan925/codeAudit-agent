@@ -60,6 +60,13 @@ Only the AI variables matter in Phase 2; everything else has safe defaults.
 | `CODEAUDIT_AI_MAX_FILE_CHARS` | Per-file excerpt cap | `6000` |
 | `CODEAUDIT_AI_MAX_FINDINGS` | Max deterministic findings sent | `25` |
 | `CODEAUDIT_AI_CONTEXT_LINES` | Source lines around each finding | `15` |
+| `CODEAUDIT_FIX_MAX_CONTEXT_CHARS` | Hard fix-prompt context cap (Phase 3) | `12000` |
+| `CODEAUDIT_FIX_MAX_FILE_CHARS` | Per-file window cap for fix context (Phase 3) | `4000` |
+| `CODEAUDIT_FIX_CONTEXT_LINES` | Source lines around the evidence line (Phase 3) | `20` |
+| `CODEAUDIT_FIX_TEMPERATURE` | Model temperature for fix proposals (Phase 3) | `0.2` |
+| `CODEAUDIT_FIX_MAX_TOKENS` | Output cap per fix proposal (Phase 3) | `1500` |
+| `CODEAUDIT_FIX_MAX_CHANGES` | Max changes accepted per proposal (Phase 3) | `5` |
+| `CODEAUDIT_MAX_REMEDIATIONS_PER_REQUEST` | Hard cap on batch remediation (Phase 3) | `3` |
 | `GITHUB_TOKEN` | Raises GitHub API rate limits for metadata | — |
 | `CODEAUDIT_MAX_FILE_SIZE` | Skip files larger than this (bytes) | `1000000` |
 | `CODEAUDIT_MAX_FILES` | Max files analyzed per repo | `2000` |
@@ -127,6 +134,71 @@ Response (structured):
 `ai.status` is `disabled` when no credentials are configured, `failed` /
 `unavailable` when the provider errors — deterministic findings are always
 returned regardless.
+
+### `POST /remediate`
+Proposes and deterministically verifies a fix for one finding
+(FIND → FIX → VERIFY). The repository is cloned fresh, the finding is
+located in the analysis result, Nemotron proposes a minimal structured patch,
+the patch engine validates every change, the patch is applied inside an
+isolated temporary workspace, and the deterministic pipeline (AI disabled)
+re-analyzes the workspace to verify the outcome. The original repository is
+never modified.
+
+Request:
+```json
+{ "repository_url": "https://github.com/owner/repo", "finding_id": "sql_string_construction:backend/users.py:47" }
+```
+
+Response (structured):
+```json
+{
+  "status": "verified",
+  "finding_id": "sql_string_construction:backend/users.py:47",
+  "proposal": {
+    "finding_id": "sql_string_construction:backend/users.py:47",
+    "decision": "fix",
+    "reasoning": "Parameterize the query ...",
+    "changes": [
+      {
+        "file": "backend/users.py", "start_line": 47, "end_line": 47,
+        "old_text": "cursor.execute(\"SELECT * FROM users WHERE id = \" + user_id)",
+        "new_text": "cursor.execute(\"SELECT * FROM users WHERE id = %s\", (user_id,))",
+        "rationale": "parameterize the query"
+      }
+    ],
+    "provider": "nemotron", "model": "nvidia/nemotron-3-ultra",
+    "prompt_version": "codeaudit-remediation-v1"
+  },
+  "verification": {
+    "status": "verified", "verified": true,
+    "finding_present_before": true, "finding_present_after": false,
+    "original_evidence_present_before": true, "original_evidence_present_after": false,
+    "new_findings_introduced": [],
+    "reason": "The original finding and its evidence no longer appear ..."
+  },
+  "changes_applied": [ { "file": "backend/users.py", "start_line": 47, "end_line": 47, "lines_changed": 1 } ],
+  "changes_rejected": [],
+  "risk_before": { "score": 1, "level": "low", "...": "..." },
+  "risk_after": { "score": 0, "level": "low", "...": "..." }
+}
+```
+
+`status` is one of `verified`, `partially_verified`, `not_verified`,
+`patch_rejected`, `new_issue_introduced`, `cannot_verify`, `unavailable`
+(AI not configured), or `failed` (AI error — the analysis itself is never
+destroyed). Unknown `finding_id` returns 404.
+
+### `POST /remediate/batch`
+Remediates several findings, each independently against the original
+repository (fixes are never chained). Limited to
+`CODEAUDIT_MAX_REMEDIATIONS_PER_REQUEST` (default 3) — more returns 400.
+
+Request:
+```json
+{ "repository_url": "https://github.com/owner/repo", "finding_ids": ["sql_string_construction:backend/users.py:47"] }
+```
+
+Response: a JSON array of remediation results, one per finding.
 
 ### File accounting
 
@@ -351,7 +423,7 @@ never guessed into a finding.
 
 ### Test strategy
 
-144 hermetic tests, no network: fake OpenAI client exercises timeouts,
+144 hermetic tests cover the Phase 2 AI layer (no network): fake OpenAI client exercises timeouts,
 rate limits, auth failures, 5xx, malformed/fenced/invalid JSON, path
 traversal; context-builder tests pin budgets and determinism; prompt tests
 prove injection text stays inside `<repository_evidence>` delimiters;
@@ -364,7 +436,84 @@ cd backend
 NEBIUS_API_KEY=... NEMOTRON_MODEL=... python scripts/smoke_nemotron.py
 ```
 
+```bash
+cd backend
+NEBIUS_API_KEY=<redacted>
+```
+
 No accuracy/precision benchmarks are claimed — none have been measured.
+
+## Phase 3 — Verified remediation (FIND → FIX → VERIFY)
+
+Phase 3 adds the remediation layer **after** findings are produced. It does
+not replace the Phase 1/2 pipeline. The model proposes a fix; the system
+controls the patch; the system verifies the result. A claimed fix without
+verification is not a verified fix.
+
+### The loop
+
+```
+POST /remediate {repository_url, finding_id}
+        ↓
+locate the finding in the BEFORE analysis (unknown id → 404)
+        ↓
+FixContext — bounded evidence window around the cited line (the evidence
+line is expanded outward from, so it can never be truncated), enclosing
+function/class, budgets recorded
+        ↓
+Nemotron propose_fix — versioned prompt (codeaudit-remediation-v1),
+JSON-only contract, repository bytes treated as UNTRUSTED DATA inside
+<repository_evidence> delimiters (injection attempts neutralized)
+        ↓
+normalize → Pydantic validate → fail-closed reject; finding_id / provider /
+model / prompt_version are STAMPED BY THE SYSTEM, never trusted from the model
+        ↓
+PatchEngine.validate_changes — deterministic gate per change:
+  safe relative path (no traversal, no absolute), v1 scope (the finding's
+  own file only), file exists, valid line range, old_text matches EXACTLY
+  at the claimed lines (whitespace-tolerant), ranges do not overlap
+        ↓
+temporary_workspace — the repo is copied to an isolated temp dir
+(.git excluded, symlinks preserved as links); the ORIGINAL IS NEVER MODIFIED
+        ↓
+apply_validated_changes — bottom-up, re-verifies old_text against disk,
+refuses symlinks and root escapes; valid changes apply, invalid ones are
+recorded as RejectedChange (partial application, never half-applied)
+        ↓
+deterministic AFTER analysis (AI disabled) on the workspace
+        ↓
+verification_engine.verify_fix — BEFORE vs AFTER on repository content only:
+  VERIFIED (finding + evidence gone, nothing new in changed files),
+  NOT_VERIFIED (identity match persists, line shift ≤ 2),
+  PARTIALLY_VERIFIED (same detector fires on the same file within 10 lines),
+  NEW_ISSUE_INTRODUCED (original gone + new verified finding in changed files),
+  CANNOT_VERIFY (patched file missing, or evidence present but detector silent)
+        ↓
+RemediationResult — {status, proposal, verification, changes_applied,
+changes_rejected, risk_before, risk_after}; workspace always cleaned up
+```
+
+### Failure behavior
+
+Every failure mode degrades to a status, never an exception, and the
+original repository is byte-identical afterwards: AI not configured →
+`unavailable`; AI error / malformed JSON / schema failure → `failed` with a
+sanitized error code (no tracebacks, no raw model text); nothing valid to
+apply → `patch_rejected`; the model declines (`cannot_fix`) → `not_verified`
+with the proposal attached. The BEFORE analysis is never destroyed.
+
+### Test strategy
+
+221 hermetic tests, no network: patch-engine tests cover every rejection
+(traversal, absolute, unrelated file, wrong old_text, overlapping ranges,
+symlinks, root escapes); context/prompt tests pin budgets and delimiter
+injection defense; verification-engine tests pin all five outcomes;
+end-to-end tests run the §20 scenarios (good fix → verified, `%`-formatting
+fix → not_verified, `eval` fix → new_issue_introduced) with a fake provider,
+plus risk recalculation and line-shift cases; a parametrized failure-mode
+test asserts the original repo is byte-identical across 8 degradation paths;
+API tests cover `/remediate` and `/remediate/batch` (404/400 mapping, cap
+enforcement). No live Nemotron remediation calls — none have been measured.
 
 ## Design principles
 
@@ -383,5 +532,7 @@ No accuracy/precision benchmarks are claimed — none have been measured.
 - Deep analysis is Python-only; other languages are detected but not parsed.
 - 10 deterministic detectors; Nemotron adds reasoning but no new detector families yet.
 - AI enrichment is one investigation call per analysis (no per-finding agent fan-out).
-- No fix generation, no re-scan/verification loop, no PDF reports (later phases).
-- No frontend, Docker, CI/CD, auth, or database — intentionally out of scope.
+- No PDF reports, no frontend, Docker, CI/CD, auth, or database — intentionally
+  out of scope.
+- Remediation is backend-only: `POST /remediate` proposes and verifies fixes,
+  but no code is ever written back to the analyzed repository.
