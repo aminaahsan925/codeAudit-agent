@@ -1,10 +1,11 @@
-"""Tests for the AI provider boundary and report generator (interfaces only)."""
+"""Tests for the AI provider boundary and report generator."""
 
 import pytest
 
 from services.ai_provider import AIProviderNotConfigured, StubAIProvider
 from services.nemotron_service import NemotronService
 from services.report_generator import ReportGenerator
+from tests.fakes import FakeOpenAIClient
 
 
 def test_nemotron_unconfigured_raises_cleanly():
@@ -14,17 +15,28 @@ def test_nemotron_unconfigured_raises_cleanly():
         service.investigate([], {})
 
 
-def test_nemotron_configured_but_phase1_refuses_live_call():
-    service = NemotronService(api_key="fake-key", model="some-model")
+def test_nemotron_configured_uses_injected_client():
+    import json
+
+    from services.ai_context_builder import AIContext
+
+    payload = json.dumps({"assessments": [], "new_findings": []})
+    client = FakeOpenAIClient(response_text=payload)
+    service = NemotronService(
+        api_key="fake-key", model="fake-model", client_factory=lambda: client
+    )
     assert service.is_configured
-    with pytest.raises(NotImplementedError):
-        service.investigate([], {})
+    result = service.investigate([], AIContext(repo_owner="o", repo_name="r"))
+    assert result.status == "enabled"
+    assert result.provider_name == "nemotron"
 
 
-def test_stub_provider_passes_through():
+def test_stub_provider_returns_disabled_result():
     stub = StubAIProvider()
     assert stub.name == "stub"
-    assert stub.investigate(["a", "b"], {}) == ["a", "b"]
+    result = stub.investigate(["a", "b"], {})
+    assert result.status == "disabled"
+    assert result.assessments == [] and result.candidates == []
 
 
 def test_report_generator_markdown(fixtures_dir):
