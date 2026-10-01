@@ -18,6 +18,9 @@ ASSESSMENT APPLICATION (enrichment of deterministic findings):
 
 DEDUPLICATION (AI candidates vs deterministic findings):
   * Match key: same normalized file + same category + |line diff| <= 2.
+    Path comparison is case-sensitive, matching the evidence hard gate's
+    exact lookup: a wrong-case candidate never merges into (or rewrites)
+    a deterministic anchor.
   * A candidate matching a deterministic finding is merged INTO it (its
     reasoning/suggested_fix enrich the anchor when not already set) and
     counted as a duplicate — never shown as a second card.
@@ -61,7 +64,19 @@ def _demote_one_step(confidence: Confidence) -> Confidence:
 
 
 def _normalize_path(path: str) -> str:
-    return (path or "").replace("\\", "/").strip().lower()
+    """Normalize separators and surrounding whitespace, PRESERVING case.
+
+    Repository paths may be case-sensitive (Git/GitHub), so the canonical
+    stored path must keep its original case. Lowercasing here used to make
+    findings miss the evidence hard gate, which looks up the exact path in
+    ``scan.contents``. Only separators and surrounding whitespace are
+    normalized; ``..`` segments are never silently repaired (traversal is
+    rejected fail-closed at the service boundary instead).
+    """
+    normalized = (path or "").replace("\\", "/").strip()
+    while "//" in normalized:
+        normalized = normalized.replace("//", "/")
+    return normalized
 
 
 @dataclass

@@ -25,6 +25,7 @@ from services.ai_result_processor import (
     candidate_to_finding,
     merge_ai_results,
 )
+from services.finding_validator import validate_findings
 
 
 def _finding(fid="det:app.py:10", confidence=Confidence.HIGH, **over) -> Finding:
@@ -200,3 +201,95 @@ def test_input_lists_not_mutated():
     apply_assessments(findings, assessments, provider_name="n", prompt_version="v")
     assert findings[0].confidence == Confidence.HIGH
     assert findings[0].ai_reasoning is None
+
+
+# --- Regression tests: case-sensitive repository path handling ---
+#
+# _normalize_path() used to lowercase the whole path, which corrupted
+# case-sensitive repository paths ("Auth/Login.py" -> "auth/login.py") and
+# made findings miss the evidence hard gate's exact lookup in scan.contents.
+# Canonical paths must preserve case; only separators/whitespace normalize.
+
+
+def test_candidate_path_case_preserved():
+    # A: AI candidate file "Auth/Login.py" -> final finding keeps its case.
+    finding = candidate_to_finding(
+        _candidate(file="Auth/Login.py"), provider_name="nemotron", prompt_version="v1"
+    )
+    assert finding.file == "Auth/Login.py"
+    assert finding.id.startswith("ai:Auth/Login.py:50:")
+
+
+def test_backslash_normalized_without_lowercasing():
+    # B: "Auth\Login.py" -> "Auth/Login.py" (separators fixed, case kept).
+    finding = candidate_to_finding(
+        _candidate(file="Auth\\Login.py"),
+        provider_name="nemotron",
+        prompt_version="v1",
+    )
+    assert finding.file == "Auth/Login.py"
+
+
+def test_evidence_gate_passes_for_case_matching_path():
+    # C: scanned path "Auth/Login.py" + AI citing "Auth/Login.py" -> validated.
+    contents = {"Auth/Login.py": "header = True\nq = 'SELECT ' + x\nfooter = True\n"}
+    candidate = _candidate(file="Auth/Login.py", line=2).model_copy(
+        update={"evidence": "q = 'SELECT ' + x"}
+    )
+    merged = merge_ai_results([], _result(candidates=[candidate]))
+    assert len(merged.new_candidates) == 1
+    result = validate_findings(merged.new_candidates, contents)
+    assert len(result.validated) == 1
+    assert result.validated[0].file == "Auth/Login.py"
+    assert result.drop_reasons == {}
+
+
+def test_mismatched_case_path_does_not_silently_resolve():
+    # D: only "Auth/Login.py" exists but AI cites "auth/login.py" ->
+    # the candidate is dropped (file_not_found), NOT rewritten to the
+    # real file's case.
+    contents = {"Auth/Login.py": "header = True\nq = 'SELECT ' + x\nfooter = True\n"}
+    candidate = _candidate(file="auth/login.py", line=2).model_copy(
+        update={"evidence": "q = 'SELECT ' + x"}
+    )
+    merged = merge_ai_results([], _result(candidates=[candidate]))
+    assert len(merged.new_candidates) == 1
+    assert merged.new_candidates[0].file == "auth/login.py"
+    result = validate_findings(merged.new_candidates, contents)
+    assert len(result.validated) == 0
+    assert result.drop_reasons.get("file_not_found") == 1
+
+
+def test_dedup_matching_is_case_sensitive():
+    # A wrong-case AI candidate must not merge into a deterministic anchor:
+    # on a case-sensitive filesystem these are different files, and merging
+    # would attach reasoning to evidence it does not match.
+    det = _finding(file="Auth/Login.py", line=10)
+    merged = merge_ai_results(
+        [det], _result(candidates=[_candidate(file="auth/login.py", line=10)])
+    )
+    assert merged.duplicates_merged == 0
+    assert len(merged.new_candidates) == 1
+    assert merged.new_candidates[0].file == "auth/login.py"
+
+
+def test_repeated_separators_collapsed_case_preserved():
+    finding = candidate_to_finding(
+        _candidate(file="  Auth//Login.py  "),
+        provider_name="nemotron",
+        prompt_version="v1",
+    )
+    assert finding.file == "Auth/Login.py"
+
+
+def test_traversal_segments_not_silently_repaired():
+    # E (processor layer): ".." is never normalized away here. Rejection
+    # stays enforced fail-closed at the service boundary — see
+    # test_path_traversal_rejected / test_absolute_path_rejected in
+    # test_ai_service.py, which must keep passing.
+    finding = candidate_to_finding(
+        _candidate(file="a/../../etc/passwd"),
+        provider_name="nemotron",
+        prompt_version="v1",
+    )
+    assert ".." in finding.file.split("/")
