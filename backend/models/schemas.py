@@ -114,6 +114,27 @@ class Finding(BaseModel):
     prompt_version: Optional[str] = Field(
         default=None, description="Prompt version used for the AI reasoning, if any"
     )
+    # Multi-agent traceability (Phase 3 upgrade). Which agents genuinely
+    # participated in this finding's lifecycle. Never claims participation
+    # that did not happen.
+    provenance: Optional["FindingProvenance"] = Field(
+        default=None, description="Agent participation trail for this finding"
+    )
+
+
+class FindingProvenance(BaseModel):
+    """Which agents genuinely participated in a finding's lifecycle.
+
+    detected_by: specialist agent(s) that surfaced it (or "evidence_agent"
+        for AI-discovered findings that passed the evidence hard gate).
+    reviewed_by: agents that reasoned over it (e.g. "evidence_agent").
+    fixed_by / verified_by: populated along the remediation trail.
+    """
+
+    detected_by: list[str] = Field(default_factory=list)
+    reviewed_by: list[str] = Field(default_factory=list)
+    fixed_by: list[str] = Field(default_factory=list)
+    verified_by: list[str] = Field(default_factory=list)
 
 
 class ValidatedFinding(Finding):
@@ -276,12 +297,60 @@ def _disabled_ai_status() -> AIStatus:
     return AIStatus(status=AIStatusValue.DISABLED)
 
 
+class AIBudgetReport(BaseModel):
+    """Cost visibility for one bounded AI budget (analysis or remediation).
+
+    Monetary cost is deliberately NOT estimated: only call counts against
+    the configured hard limit are reported.
+    """
+
+    mode: str = Field(..., description="'free' | 'economy' | 'full'")
+    purpose: str = Field(..., description="'analysis' or 'remediation'")
+    limit: int = Field(..., ge=0, description="Hard cap on Nemotron calls")
+    used: int = Field(..., ge=0, description="Nemotron calls actually made")
+    remaining: int = Field(..., ge=0)
+
+
+class AgentInfo(BaseModel):
+    """Per-agent execution record for the final supervisor report."""
+
+    agent_name: str
+    status: str = Field(..., description="'completed' | 'failed' | 'skipped' | 'degraded'")
+    duration_ms: int = 0
+    model_used: Optional[str] = Field(default=None)
+    model_calls: int = 0
+    context_chars: int = 0
+    prompt_version: Optional[str] = None
+    findings_count: int = 0
+    errors: list[str] = Field(default_factory=list)
+
+
+class AgentRunSummary(BaseModel):
+    """Multi-agent execution metadata attached to an analysis result."""
+
+    execution_id: str
+    mode: str = Field(..., description="AI operating mode: 'free' | 'economy' | 'full'")
+    completed: int = Field(default=0, description="Agents that completed")
+    ai_calls: int = Field(default=0, description="Total Nemotron calls made")
+    agents: list[AgentInfo] = Field(default_factory=list)
+    budget: Optional[AIBudgetReport] = Field(
+        default=None, description="Analysis-budget visibility"
+    )
+
+
 class AnalysisResult(BaseModel):
     repository: RepositoryMetadata
     summary: AnalysisSummary
     findings: list[ValidatedFinding]
     risk: RiskResult
     ai: AIStatus = Field(default_factory=_disabled_ai_status)
+    # Multi-agent upgrade (Phase 3): optional so older clients keep working.
+    agents: Optional[AgentRunSummary] = Field(
+        default=None, description="Per-agent execution metadata, when run via the supervisor"
+    )
+    ai_budget: Optional[AIBudgetReport] = Field(
+        default=None, description="AI call budget visibility for this analysis"
+    )
 
 
 class ErrorDetail(BaseModel):
@@ -441,6 +510,9 @@ class RemediationResult(BaseModel):
     risk_after: Optional[RiskResult] = None
     error_code: Optional[str] = None
     error_message: Optional[str] = None
+    # Multi-agent upgrade: which agents genuinely participated in this
+    # remediation (subset of fix_agent / patch_guard / verification_agent).
+    agent_trail: list[str] = Field(default_factory=list)
 
 
 class RemediationRequest(BaseModel):

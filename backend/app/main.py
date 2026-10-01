@@ -22,6 +22,7 @@ from models.schemas import (
     RemediationResult,
 )
 from services import github_service, repository_scanner
+from agents.supervisor_agent import SupervisorAgent
 from services.orchestrator import AnalysisOrchestrator
 from services.remediation_engine import RemediationEngine
 from services.remediation_errors import (
@@ -41,13 +42,18 @@ app = FastAPI(
     version=settings.app_version,
     description=(
         "Evidence-driven security and code-quality analysis for GitHub repositories. "
-        "Phase 2: deterministic static analysis plus Nemotron AI reasoning over "
-        "verified repository evidence."
+        "Multi-agent backend: deterministic specialist agents (security, "
+        "performance, quality) coordinated by a supervisor, with cost-capped "
+        "Nemotron AI reasoning over verified repository evidence."
     ),
 )
 
 orchestrator = AnalysisOrchestrator()
 remediation_engine = RemediationEngine()
+# Multi-agent backend: the supervisor coordinates specialist agents with a
+# hard AI-call budget (FREE/ECONOMY/FULL modes). Module-level `orchestrator`
+# and `remediation_engine` names are kept for backward compatibility.
+supervisor = SupervisorAgent(orchestrator=orchestrator)
 
 
 @app.exception_handler(RemediationFindingNotFound)
@@ -141,31 +147,35 @@ def health() -> dict:
 
 @app.post("/analyze", response_model=AnalysisResult)
 def analyze(request: AnalysisRequest) -> AnalysisResult:
-    """Analyze a public GitHub repository and return structured findings."""
+    """Analyze a public GitHub repository and return structured findings.
+
+    Runs through the multi-agent supervisor: deterministic specialists
+    (security, performance, quality) in parallel, budgeted Nemotron
+    evidence review per the configured agent mode, deterministic fusion.
+    """
     ref = github_service.validate_github_url(request.repository_url)
     with github_service.temporary_repo_dir() as tmp:
         repo_dir = tmp / "repo"
         orchestrator.fetch_repo(request.repository_url, repo_dir)
-        return orchestrator.run(request.repository_url, repo_dir)
+        return supervisor.run(request.repository_url, repo_dir)
 
 
 @app.post("/remediate", response_model=RemediationResult)
 def remediate(request: RemediationRequest) -> RemediationResult:
     """Propose and deterministically verify a fix for one finding.
 
-    FIND -> FIX -> VERIFY: Nemotron proposes a minimal patch, the patch
-    engine validates and applies it inside an isolated temporary workspace,
-    and the deterministic analyzer verifies the outcome. The original
-    repository is never modified.
+    FIND -> FIX -> VERIFY, coordinated by the supervisor: the Fix agent
+    proposes a minimal patch (budgeted), the patch engine validates and
+    applies it inside an isolated temporary workspace, and the
+    Verification agent verifies the outcome deterministically. The
+    original repository is never modified.
     """
     github_service.validate_github_url(request.repository_url)
     with github_service.temporary_repo_dir() as tmp:
         repo_dir = tmp / "repo"
         orchestrator.fetch_repo(request.repository_url, repo_dir)
-        before = orchestrator.run(request.repository_url, repo_dir)
-        return remediation_engine.remediate_finding(
-            request.finding_id, repo_dir, before
-        )
+        before = supervisor.run(request.repository_url, repo_dir)
+        return supervisor.remediate_finding(request.finding_id, repo_dir, before)
 
 
 @app.post("/remediate/batch", response_model=list[RemediationResult])
@@ -185,7 +195,5 @@ def remediate_batch(request: BatchRemediationRequest) -> list[RemediationResult]
     with github_service.temporary_repo_dir() as tmp:
         repo_dir = tmp / "repo"
         orchestrator.fetch_repo(request.repository_url, repo_dir)
-        before = orchestrator.run(request.repository_url, repo_dir)
-        return remediation_engine.remediate_findings(
-            request.finding_ids, repo_dir, before
-        )
+        before = supervisor.run(request.repository_url, repo_dir)
+        return supervisor.remediate_findings(request.finding_ids, repo_dir, before)

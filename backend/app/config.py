@@ -37,6 +37,31 @@ def _get_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
+def _get_optional_int(name: str) -> int | None:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return None
+    try:
+        return int(raw.strip())
+    except ValueError:
+        return None
+
+
+# --- Multi-agent AI operating modes (Phase 3 upgrade) ---
+# "free":    never call Nebius; deterministic specialists only (default)
+# "economy": deterministic specialists + at most ONE Nemotron analysis call
+# "full":    selective multi-agent Nemotron reasoning within hard call caps
+AGENT_MODES = ("free", "economy", "full")
+
+_AGENT_ANALYSIS_CALL_DEFAULTS = {"free": 0, "economy": 1, "full": 4}
+_AGENT_REMEDIATION_CALL_DEFAULTS = {"free": 0, "economy": 1, "full": 2}
+
+
+def _get_agent_mode() -> str:
+    raw = (os.environ.get("CODEAUDIT_AGENT_MODE") or "").strip().lower()
+    return raw if raw in AGENT_MODES else "free"
+
+
 @dataclass(frozen=True)
 class Settings:
     # --- AI provider (Phase 2: live Nemotron via Nebius Token Factory) ---
@@ -86,6 +111,33 @@ class Settings:
     log_level: str = field(default_factory=lambda: os.environ.get("CODEAUDIT_LOG_LEVEL", "INFO"))
     app_name: str = "CodeAudit Agent"
     app_version: str = "0.1.0"
+
+    # --- Multi-agent AI operating mode (Phase 3 upgrade) ---
+    # "free" (default): zero Nebius calls. "economy": bounded AI review.
+    # "full": selective multi-agent reasoning within hard call caps.
+    agent_mode: str = field(default_factory=_get_agent_mode)
+    # Explicit overrides; when unset, the mode defaults apply
+    # (free: 0/0, economy: 1/1, full: 4/2 for analysis/remediation).
+    max_ai_calls_per_analysis: int | None = field(
+        default_factory=lambda: _get_optional_int("CODEAUDIT_MAX_AI_CALLS_PER_ANALYSIS")
+    )
+    max_ai_calls_per_remediation: int | None = field(
+        default_factory=lambda: _get_optional_int("CODEAUDIT_MAX_AI_CALLS_PER_REMEDIATION")
+    )
+
+    @property
+    def ai_calls_analysis_limit(self) -> int:
+        """Hard cap on Nemotron calls per analysis. Never unlimited."""
+        if self.max_ai_calls_per_analysis is not None:
+            return max(0, self.max_ai_calls_per_analysis)
+        return _AGENT_ANALYSIS_CALL_DEFAULTS.get(self.agent_mode, 0)
+
+    @property
+    def ai_calls_remediation_limit(self) -> int:
+        """Hard cap on Nemotron calls per remediation. Never unlimited."""
+        if self.max_ai_calls_per_remediation is not None:
+            return max(0, self.max_ai_calls_per_remediation)
+        return _AGENT_REMEDIATION_CALL_DEFAULTS.get(self.agent_mode, 0)
 
 
 settings = Settings()
