@@ -14,6 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main as app_main
+from agents.supervisor_agent import SupervisorAgent
 from models.schemas import (
     FixChange,
     FixDecision,
@@ -66,11 +67,17 @@ def remediate_client(
     monkeypatch.setattr(
         github_service, "fetch_metadata", lambda ref: {"default_branch": "main"}
     )
+    # Multi-agent upgrade: /remediate routes through the supervisor, which
+    # enforces AI budgets per its mode. Inject a supervisor wired to the
+    # fake provider in economy mode (one budgeted remediation call); free
+    # mode would force the stub provider and return UNAVAILABLE by design.
     monkeypatch.setattr(
         app_main,
-        "remediation_engine",
-        RemediationEngine(
-            ai_provider=FakeAIProvider(fix_proposal=_good_proposal())
+        "supervisor",
+        SupervisorAgent(
+            orchestrator=app_main.orchestrator,
+            ai_provider=FakeAIProvider(fix_proposal=_good_proposal()),
+            default_mode="economy",
         ),
     )
     return client
@@ -126,10 +133,16 @@ def test_remediate_batch_over_cap_is_400(remediate_client: TestClient):
 
 
 def test_remediate_unavailable_provider(remediate_client: TestClient, monkeypatch):
+    # Multi-agent upgrade: the supervisor owns the remediation path; a
+    # disabled provider must surface as UNAVAILABLE through the Fix agent.
     monkeypatch.setattr(
         app_main,
-        "remediation_engine",
-        RemediationEngine(ai_provider=FakeAIProvider(fix_status="disabled")),
+        "supervisor",
+        SupervisorAgent(
+            orchestrator=app_main.orchestrator,
+            ai_provider=FakeAIProvider(fix_status="disabled"),
+            default_mode="economy",
+        ),
     )
     response = remediate_client.post(
         "/remediate", json={"repository_url": URL, "finding_id": SQLI}
