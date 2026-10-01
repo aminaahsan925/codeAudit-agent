@@ -9,6 +9,21 @@ from __future__ import annotations
 from models.schemas import AnalysisResult
 
 
+def _ai_line(result: AnalysisResult) -> str:
+    """One honest line about what the AI layer did in this run."""
+    ai = result.ai
+    if ai.status.value == "disabled":
+        return "AI: disabled (deterministic analysis only)"
+    if ai.status.value == "enabled":
+        return (
+            f"AI: {ai.provider} enriched {ai.findings_enriched}, accepted "
+            f"{ai.ai_findings_accepted} new, dropped {ai.ai_findings_dropped}, "
+            f"merged {ai.duplicates_merged} duplicates"
+        )
+    detail = f" ({ai.error_code})" if ai.error_code else ""
+    return f"AI: {ai.status.value}{detail} — deterministic findings retained"
+
+
 class ReportGenerator:
     """Renders an AnalysisResult into human-readable summaries."""
 
@@ -23,6 +38,7 @@ class ReportGenerator:
             f"({summary.files_deep_analyzed} deep-analyzed, {summary.files_unsupported} unsupported, "
             f"{summary.files_skipped} skipped, {summary.files_failed_parse} failed to parse)",
             f"Findings: {summary.findings_total} | Risk: {risk.score}/10 ({risk.level})",
+            _ai_line(result),
             "",
             "## Findings",
         ]
@@ -43,6 +59,8 @@ class ReportGenerator:
             )
             if finding.suggested_fix:
                 lines.extend(["", f"Suggested fix: {finding.suggested_fix}"])
+            if finding.ai_reasoning:
+                lines.extend(["", f"AI reasoning ({finding.enriched_by}): {finding.ai_reasoning}"])
         return "\n".join(lines) + "\n"
 
     def to_dict(self, result: AnalysisResult) -> dict:
