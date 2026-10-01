@@ -92,12 +92,25 @@ def temporary_workspace(repo_dir: Path) -> Iterator[Path]:
 class RemediationEngine:
     """Orchestrates safe, verified remediation of validated findings."""
 
-    def __init__(self, ai_provider: AIProvider | None = None) -> None:
+    def __init__(
+        self,
+        ai_provider: AIProvider | None = None,
+        fix_agent=None,
+        verification_agent=None,
+    ) -> None:
         # None means "auto": real NemotronService when configured, else None
         # (every AI call then degrades to "unavailable" gracefully).
         if ai_provider is None:
             ai_provider = self._default_ai_provider()
         self._ai_provider = ai_provider
+        # Multi-agent upgrade: when agents are supplied, the engine
+        # delegates the AI proposal step to the Fix agent and the
+        # verification step to the Verification agent. The Patch Guard
+        # (patch_engine) and the isolated workspace stay exactly as before.
+        # Without agents the engine keeps its legacy direct-provider path,
+        # so existing behavior is unchanged.
+        self._fix_agent = fix_agent
+        self._verification_agent = verification_agent
         # Deterministic-only pipeline for AFTER analysis: verification must
         # never depend on model output.
         self._verify_orchestrator = AnalysisOrchestrator(
@@ -128,6 +141,72 @@ class RemediationEngine:
             risk_before=risk_before,
         )
 
+    def _propose_via_agent(
+        self,
+        target,
+        before,
+        contents,
+        scan,
+        parsed,
+        agent_mode: str,
+        execution_id: str | None,
+    ):
+        """Delegate the AI proposal to the Fix agent.
+
+        Returns the stamped FixProposal on success, or a terminal
+        RemediationResult when the agent outcome is terminal (cannot_fix
+        still returns a proposal — it follows the normal NOT_VERIFIED path).
+        """
+        import uuid
+
+        from agents.contracts import AgentContext
+
+        ctx = AgentContext(
+            execution_id=execution_id or uuid.uuid4().hex[:12],
+            repository=before.repository,
+            mode=agent_mode,
+            scan=scan,
+            parsed=parsed,
+            validated_findings=[
+                f for f in before.findings if f.source == FindingSource.DETERMINISTIC
+            ],
+        )
+        outcome = self._fix_agent.propose(target, ctx, contents)
+        status = outcome.status
+        if status == "ok" and outcome.proposal is not None:
+            return outcome.proposal
+        if status == "cannot_fix" and outcome.proposal is not None:
+            # Flows into the normal NOT_VERIFIED path below (decision gate).
+            return outcome.proposal
+        if status == "budget_exhausted":
+            logger.warning("Remediation fix budget exhausted for %s", target.id)
+            return self._ai_outcome(
+                RemediationStatus.UNAVAILABLE,
+                "AI_BUDGET_EXHAUSTED",
+                target.id,
+                risk_engine.calculate_risk(
+                    [
+                        f
+                        for f in before.findings
+                        if f.source == FindingSource.DETERMINISTIC
+                    ]
+                ),
+            )
+        code = outcome.error_code or (
+            AIProviderNotConfigured.code
+            if status == "unavailable"
+            else AIUpstreamError.code
+        )
+        return self._ai_outcome(
+            RemediationStatus.UNAVAILABLE
+            if status == "unavailable"
+            else RemediationStatus.FAILED,
+            code,
+            target.id,
+            risk_engine.calculate_risk(
+                [f for f in before.findings if f.source == FindingSource.DETERMINISTIC]
+            ),
+        )
     def _patch_rejected(
         self,
         finding_id: str,
@@ -156,9 +235,19 @@ class RemediationEngine:
         )
 
     def remediate_finding(
-        self, finding_id: str, repo_dir: Path, before: AnalysisResult
+        self,
+        finding_id: str,
+        repo_dir: Path,
+        before: AnalysisResult,
+        agent_mode: str = "full",
+        execution_id: str | None = None,
     ) -> RemediationResult:
-        """Run one FIND -> FIX -> VERIFY cycle. Never modifies repo_dir."""
+        """Run one FIND -> FIX -> VERIFY cycle. Never modifies repo_dir.
+
+        ``agent_mode``/``execution_id`` are only used when a Fix agent is
+        attached and it needs a minimal AgentContext built (the Supervisor
+        normally arranges this; defaults keep the engine usable standalone).
+        """
         target = next((f for f in before.findings if f.id == finding_id), None)
         if target is None:
             raise RemediationFindingNotFound(
@@ -195,54 +284,74 @@ class RemediationEngine:
         parsed, _ = self._verify_orchestrator.parse(scan)
         fix_context = build_fix_context(target, contents, parsed)
 
-        try:
-            fix_result = provider.propose_fix(target, fix_context)
-        except AIProviderNotConfigured as exc:
-            return self._ai_outcome(
-                RemediationStatus.UNAVAILABLE, exc.code, target.id, risk_before
+        # STEP 4: AI proposes a minimal fix (never executes it).
+        # When a Fix agent is attached, the budgeted agent path runs:
+        # bounded context + budget reservation + cache + injection defense,
+        # with graceful mapping of every agent outcome. Otherwise the
+        # engine's legacy direct-provider path runs (existing behavior,
+        # including all recorded edge cases, is unchanged).
+        if self._fix_agent is not None:
+            agent_failure = self._propose_via_agent(
+                target,
+                before,
+                contents,
+                scan,
+                parsed,
+                agent_mode=agent_mode,
+                execution_id=execution_id,
             )
-        except AIError as exc:
-            return self._ai_outcome(
-                RemediationStatus.FAILED, exc.code, target.id, risk_before
-            )
-        except Exception:  # noqa: BLE001 - AI bugs must not break remediation
-            logger.exception("Unexpected AI provider failure during remediation")
-            return self._ai_outcome(
-                RemediationStatus.FAILED, AIUpstreamError.code, target.id, risk_before
-            )
+            if isinstance(agent_failure, RemediationResult):
+                return agent_failure
+            proposal = agent_failure
+        else:
+            try:
+                fix_result = provider.propose_fix(target, fix_context)
+            except AIProviderNotConfigured as exc:
+                return self._ai_outcome(
+                    RemediationStatus.UNAVAILABLE, exc.code, target.id, risk_before
+                )
+            except AIError as exc:
+                return self._ai_outcome(
+                    RemediationStatus.FAILED, exc.code, target.id, risk_before
+                )
+            except Exception:  # noqa: BLE001 - AI bugs must not break remediation
+                logger.exception("Unexpected AI provider failure during remediation")
+                return self._ai_outcome(
+                    RemediationStatus.FAILED, AIUpstreamError.code, target.id, risk_before
+                )
 
-        if fix_result.status == "disabled":
-            return self._ai_outcome(
-                RemediationStatus.UNAVAILABLE,
-                AIProviderNotConfigured.code,
-                target.id,
-                risk_before,
-            )
-        if fix_result.status in ("failed", "unavailable"):
-            code = fix_result.error_code or AIUpstreamError.code
-            return self._ai_outcome(
-                RemediationStatus.FAILED
-                if fix_result.status == "failed"
-                else RemediationStatus.UNAVAILABLE,
-                code,
-                target.id,
-                risk_before,
-            )
-        if fix_result.proposal is None:
-            return self._ai_outcome(
-                RemediationStatus.FAILED, AIOutputInvalid.code, target.id, risk_before
-            )
+            if fix_result.status == "disabled":
+                return self._ai_outcome(
+                    RemediationStatus.UNAVAILABLE,
+                    AIProviderNotConfigured.code,
+                    target.id,
+                    risk_before,
+                )
+            if fix_result.status in ("failed", "unavailable"):
+                code = fix_result.error_code or AIUpstreamError.code
+                return self._ai_outcome(
+                    RemediationStatus.FAILED
+                    if fix_result.status == "failed"
+                    else RemediationStatus.UNAVAILABLE,
+                    code,
+                    target.id,
+                    risk_before,
+                )
+            if fix_result.proposal is None:
+                return self._ai_outcome(
+                    RemediationStatus.FAILED, AIOutputInvalid.code, target.id, risk_before
+                )
 
-        # Traceability is stamped by the system, never trusted from the model.
-        proposal = fix_result.proposal.model_copy(
-            update={
-                "finding_id": target.id,
-                "provider": fix_result.provider_name
-                or getattr(provider, "name", ""),
-                "model": fix_result.model or "",
-                "prompt_version": fix_result.prompt_version or "",
-            }
-        )
+            # Traceability is stamped by the system, never trusted from the model.
+            proposal = fix_result.proposal.model_copy(
+                update={
+                    "finding_id": target.id,
+                    "provider": fix_result.provider_name
+                    or getattr(provider, "name", ""),
+                    "model": fix_result.model or "",
+                    "prompt_version": fix_result.prompt_version or "",
+                }
+            )
 
         if proposal.decision == FixDecision.CANNOT_FIX:
             return RemediationResult(
@@ -287,14 +396,27 @@ class RemediationEngine:
                 for f in after.findings
                 if f.source == FindingSource.DETERMINISTIC
             ]
-            verification = verification_engine.verify_fix(
-                finding=target,
-                before_findings=deterministic_before,
-                before_contents=contents,
-                after_findings=deterministic_after,
-                after_contents=after_contents,
-                changed_files=[a.file for a in outcome.applied],
-            )
+            if self._verification_agent is not None:
+                # Verification agent coordinates: it runs the deterministic
+                # verification engine and attaches a deterministic
+                # explanation. It never overrides the verdict.
+                verification = self._verification_agent.verify(
+                    finding=target,
+                    before_findings=deterministic_before,
+                    before_contents=contents,
+                    after_findings=deterministic_after,
+                    after_contents=after_contents,
+                    changed_files=[a.file for a in outcome.applied],
+                ).verification
+            else:
+                verification = verification_engine.verify_fix(
+                    finding=target,
+                    before_findings=deterministic_before,
+                    before_contents=contents,
+                    after_findings=deterministic_after,
+                    after_contents=after_contents,
+                    changed_files=[a.file for a in outcome.applied],
+                )
             risk_after = risk_engine.calculate_risk(deterministic_after)
 
             return RemediationResult(

@@ -90,8 +90,13 @@ class FakeAIProvider:
         self.received_context = None
         self.received_fix_finding = None
         self.received_fix_context = None
+        # Counters for the multi-agent upgrade: every investigate/propose_fix
+        # call increments these, so tests can assert zero-call guarantees.
+        self.investigate_calls = 0
+        self.propose_fix_calls = 0
 
     def investigate(self, findings, context) -> AIInvestigationResult:
+        self.investigate_calls += 1
         self.received_findings = findings
         self.received_context = context
         if self._exc is not None:
@@ -110,6 +115,7 @@ class FakeAIProvider:
         )
 
     def propose_fix(self, finding, context) -> FixProposalResult:
+        self.propose_fix_calls += 1
         self.received_fix_finding = finding
         self.received_fix_context = context
         if self._fix_exc is not None:
