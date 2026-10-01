@@ -1,0 +1,117 @@
+"""Repository scanner: safe file discovery with ignore rules and limits.
+
+Walks a cloned repository and decides which files are worth analyzing.
+Generated, vendored, binary, and oversized files are skipped. Symlinks are
+never followed. Nothing is executed.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from app.config import settings
+from models.schemas import AnalyzedFile
+from utils.constants import (
+    DEEP_ANALYSIS_LANGUAGES,
+    IGNORED_DIRS,
+    IGNORED_EXTENSIONS,
+    LANGUAGE_BY_EXTENSION,
+)
+from utils.file_utils import is_binary, read_text_safe, safe_relative_path
+
+logger = logging.getLogger(__name__)
+
+
+def detect_language(path: Path) -> str | None:
+    """Language from file extension. None for unrecognized files."""
+    return LANGUAGE_BY_EXTENSION.get(path.suffix.lower())
+
+
+@dataclass
+class ScanResult:
+    files: list[AnalyzedFile] = field(default_factory=list)
+    skipped: int = 0
+    skipped_reasons: dict[str, int] = field(default_factory=dict)
+    # relative_path -> file content, populated only for analyzed files.
+    contents: dict[str, str] = field(default_factory=dict)
+
+
+def _record_skip(result: ScanResult, reason: str) -> None:
+    result.skipped += 1
+    result.skipped_reasons[reason] = result.skipped_reasons.get(reason, 0) + 1
+
+
+def scan_repository(root: Path) -> ScanResult:
+    """Discover analyzable files under root. Never follows symlinks."""
+    result = ScanResult()
+    total_bytes = 0
+
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            _record_skip(result, "symlink")
+            continue
+        if not path.is_file():
+            continue
+
+        rel = safe_relative_path(root, path)
+        if rel is None:
+            _record_skip(result, "outside_root")
+            continue
+
+        # Ignore configured directories at any depth.
+        if any(part in IGNORED_DIRS for part in path.relative_to(root).parts[:-1]):
+            _record_skip(result, "ignored_dir")
+            continue
+
+        if path.suffix.lower() in IGNORED_EXTENSIONS:
+            _record_skip(result, "ignored_extension")
+            continue
+
+        try:
+            size = path.stat().st_size
+        except OSError:
+            _record_skip(result, "stat_failed")
+            continue
+
+        if size == 0:
+            _record_skip(result, "empty")
+            continue
+        if size > settings.max_file_size_bytes:
+            _record_skip(result, "too_large")
+            continue
+        if is_binary(path):
+            _record_skip(result, "binary")
+            continue
+        if len(result.files) >= settings.max_files:
+            _record_skip(result, "file_limit")
+            continue
+        if total_bytes + size > settings.max_total_bytes:
+            _record_skip(result, "payload_limit")
+            continue
+
+        content = read_text_safe(path)
+        if content is None:
+            _record_skip(result, "unreadable")
+            continue
+
+        language = detect_language(path)
+        result.files.append(
+            AnalyzedFile(relative_path=rel, language=language, size_bytes=size)
+        )
+        result.contents[rel] = content
+        total_bytes += size
+
+    logger.info(
+        "Scan complete: %d files analyzed, %d skipped (%s)",
+        len(result.files),
+        result.skipped,
+        result.skipped_reasons,
+    )
+    return result
+
+
+def supports_deep_analysis(language: str | None) -> bool:
+    """Whether Phase 1 performs AST-level parsing for this language."""
+    return language in DEEP_ANALYSIS_LANGUAGES

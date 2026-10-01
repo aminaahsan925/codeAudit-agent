@@ -1,0 +1,5 @@
+# CodeAudit Agent backend — runtime dependencies (minimal, pinned).
+fastapi==0.142.2
+uvicorn==0.54.0
+pydantic==2.13.5
+PyGithub==2.10.0
