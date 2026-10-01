@@ -28,7 +28,8 @@ app = FastAPI(
     version=settings.app_version,
     description=(
         "Evidence-driven security and code-quality analysis for GitHub repositories. "
-        "Phase 1: deterministic static analysis over a FastAPI backend."
+        "Phase 2: deterministic static analysis plus Nemotron AI reasoning over "
+        "verified repository evidence."
     ),
 )
 

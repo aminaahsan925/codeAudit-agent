@@ -37,6 +37,21 @@ class FindingSource(str, Enum):
     AI = "ai"
 
 
+class AIVerdict(str, Enum):
+    """Nemotron's judgment on one deterministic finding, from supplied evidence."""
+
+    CONFIRMED = "confirmed"  # evidence supports the finding as stated
+    UNCERTAIN = "uncertain"  # suspicious but evidence is insufficient
+    UNLIKELY = "unlikely"  # evidence suggests a false positive
+
+
+class AIStatusValue(str, Enum):
+    DISABLED = "disabled"  # no provider configured (or explicitly turned off)
+    ENABLED = "enabled"  # provider ran and returned a usable result
+    UNAVAILABLE = "unavailable"  # provider misconfigured / model not reachable
+    FAILED = "failed"  # provider call failed; deterministic results still returned
+
+
 class AnalysisRequest(BaseModel):
     repository_url: str = Field(
         ..., description="Public GitHub repository URL, e.g. https://github.com/owner/repo"
@@ -87,6 +102,18 @@ class Finding(BaseModel):
     confidence: Confidence
     source: FindingSource
     detector: str = Field(..., description="Name of the detector that produced this finding")
+    # AI traceability (Phase 2). Set only when Nemotron reasoned over this
+    # finding. The deterministic fields above (id/file/line/evidence/detector)
+    # are never rewritten by AI enrichment — they remain the evidence anchor.
+    ai_reasoning: Optional[str] = Field(
+        default=None, description="Nemotron's evidence-grounded reasoning, if any"
+    )
+    enriched_by: Optional[str] = Field(
+        default=None, description="AI provider that enriched this finding, e.g. 'nemotron'"
+    )
+    prompt_version: Optional[str] = Field(
+        default=None, description="Prompt version used for the AI reasoning, if any"
+    )
 
 
 class ValidatedFinding(Finding):
@@ -179,11 +206,82 @@ class AnalysisSummary(BaseModel):
         return self
 
 
+class AIFindingCandidate(BaseModel):
+    """One raw candidate finding parsed from Nemotron's structured output.
+
+    Never trusted directly: candidates go through path normalization,
+    Pydantic validation, the evidence hard gate (FindingValidator), and
+    deduplication before they can appear in a final result.
+    """
+
+    title: str = Field(..., min_length=1)
+    category: Category
+    severity: Severity
+    file: str = Field(..., min_length=1)
+    line: int = Field(..., ge=1)
+    evidence: str = Field(..., min_length=1, description="Verbatim source snippet")
+    description: str = Field(..., min_length=1)
+    suggested_fix: Optional[str] = None
+    confidence: Confidence
+    reasoning: str = Field(
+        ..., min_length=1, description="Why the evidence supports this conclusion"
+    )
+
+
+class AIAssessment(BaseModel):
+    """Nemotron's verdict on one deterministic finding."""
+
+    finding_id: str = Field(..., min_length=1)
+    verdict: AIVerdict
+    confidence: Confidence = Field(
+        ..., description="The model's confidence in its own verdict"
+    )
+    reasoning: str = Field(..., min_length=1)
+    suggested_fix: Optional[str] = None
+
+
+class AIInvestigationResponse(BaseModel):
+    """The complete structured contract Nemotron must return.
+
+    The model must return exactly this JSON shape (see services/prompts).
+    Anything else is rejected fail-closed: no AI findings are fabricated.
+    """
+
+    assessments: list[AIAssessment] = Field(default_factory=list)
+    new_findings: list[AIFindingCandidate] = Field(default_factory=list)
+
+
+class AIStatus(BaseModel):
+    """Response metadata describing what the AI layer did (or why it didn't)."""
+
+    status: AIStatusValue
+    provider: str = Field(default="", description="AI provider name, e.g. 'nemotron'")
+    model: Optional[str] = Field(default=None, description="Model id used, if any")
+    prompt_version: Optional[str] = None
+    model_calls: int = 0
+    context_chars: int = 0
+    deterministic_findings: int = 0
+    findings_enriched: int = 0
+    ai_findings_accepted: int = 0
+    ai_findings_dropped: int = 0
+    duplicates_merged: int = 0
+    duration_ms: Optional[int] = None
+    error_code: Optional[str] = None
+    error_message: Optional[str] = Field(
+        default=None, description="Sanitized; never contains credentials or SDK internals"
+    )
+
+
+def _disabled_ai_status() -> AIStatus:
+    return AIStatus(status=AIStatusValue.DISABLED)
+
+
 class AnalysisResult(BaseModel):
     repository: RepositoryMetadata
     summary: AnalysisSummary
     findings: list[ValidatedFinding]
     risk: RiskResult
+    ai: AIStatus = Field(default_factory=_disabled_ai_status)
 
 
 class ErrorDetail(BaseModel):
