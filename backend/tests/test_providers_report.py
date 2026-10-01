@@ -43,6 +43,7 @@ def test_report_generator_markdown(fixtures_dir):
     assert "CodeAudit Report" in md
     assert "Potential SQL injection" in md
     assert "users.py" in md
-    assert "Risk:" in md
+    # 2 SQL findings x (60 x 0.7 x 1.0) = 84 points -> score 1/10, low.
+    assert "Risk: 1/10 (low)" in md
     d = ReportGenerator().to_dict(result)
     assert d["summary"]["findings_total"] == 2

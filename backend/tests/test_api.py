@@ -57,7 +57,11 @@ def test_analyze_end_to_end_hermetic(client: TestClient, fixtures_dir, monkeypat
 
     assert body["repository"]["owner"] == "demo"
     assert body["repository"]["name"] == "vuln-app"
-    assert body["summary"]["files_analyzed"] == 1
+    assert body["summary"]["files_scanned"] == 1
+    assert body["summary"]["files_discovered"] == 1
+    assert body["summary"]["files_deep_analyzed"] == 1
+    assert body["summary"]["files_unsupported"] == 0
+    assert body["summary"]["files_failed_parse"] == 0
     assert body["summary"]["findings_total"] == 2
 
     detectors = {f["detector"] for f in body["findings"]}
@@ -73,7 +77,9 @@ def test_analyze_end_to_end_hermetic(client: TestClient, fixtures_dir, monkeypat
     assert finding["severity"] == "high"
 
     # Transparent risk accounting is part of the response.
-    assert body["risk"]["score"] > 0
+    # 2 SQL findings x (60 x 0.7 x 1.0) = 84 points -> min(10, round(0.84)) = 1.
+    assert body["risk"]["score"] == 1
+    assert body["risk"]["level"] == "low"
     assert "formula" in body["risk"]["breakdown"]
     assert body["risk"]["breakdown"]["findings_counted"] == 2
 
@@ -172,7 +178,9 @@ def test_empty_repo_summary_reconciles(tmp_path):
 
     result = AnalysisOrchestrator().run_on_local_path(tmp_path)
     assert result.summary.files_discovered == 0
-    assert result.summary.files_analyzed == 0
+    assert result.summary.files_scanned == 0
+    assert result.summary.files_deep_analyzed == 0
+    assert result.summary.files_unsupported == 0
     assert result.summary.files_skipped == 0
     assert result.summary.files_failed_parse == 0
     assert result.summary.findings_total == 0
@@ -200,8 +208,20 @@ def test_orchestrator_full_pipeline_on_fixtures(fixtures_dir):
             shutil.copytree(fixtures_dir / fx, root / fx)
         result = orchestrator.run_on_local_path(root)
 
-    assert result.summary.files_analyzed == 6
-    assert result.summary.files_failed_parse == 1  # invalid_python
+    s = result.summary
+    assert s.files_discovered == 6
+    assert s.files_scanned == 6
+    assert s.files_deep_analyzed == 5  # all .py except invalid_python
+    assert s.files_unsupported == 0
+    assert s.files_skipped == 0
+    assert s.files_failed_parse == 1  # invalid_python
+    # Reconciliation invariant holds.
+    assert s.files_discovered == (
+        s.files_deep_analyzed + s.files_unsupported + s.files_skipped + s.files_failed_parse
+    )
+    assert s.files_scanned == (
+        s.files_deep_analyzed + s.files_unsupported + s.files_failed_parse
+    )
     detectors = {f.detector for f in result.findings}
     assert {
         "sql_string_construction",

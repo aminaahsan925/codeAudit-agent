@@ -92,7 +92,11 @@ class AnalysisOrchestrator:
     def _analyze(self, repo_dir: Path, repository: RepositoryMetadata) -> AnalysisResult:
         """Shared pipeline core: scan -> parse -> analyze -> validate -> score."""
         scan = self.scan_files(repo_dir)
-        _, failed_parse = self.parse(scan)
+        parsed, failed_parse = self.parse(scan)
+        deep_analyzed = sum(1 for p in parsed if p.parse_error is None)
+        unsupported = sum(
+            1 for a in scan.files if not supports_deep_analysis(a.language)
+        )
         raw_findings = self.analyze_static(scan)
         validated, dropped = self.validate_findings(raw_findings, scan)
         risk = self.score_risk(validated)
@@ -105,7 +109,9 @@ class AnalysisOrchestrator:
 
         summary = AnalysisSummary(
             files_discovered=len(scan.files) + scan.skipped,
-            files_analyzed=len(scan.files),
+            files_scanned=len(scan.files),
+            files_deep_analyzed=deep_analyzed,
+            files_unsupported=unsupported,
             files_skipped=scan.skipped,
             files_failed_parse=failed_parse,
             findings_total=len(validated),
@@ -121,8 +127,13 @@ class AnalysisOrchestrator:
             risk=risk,
         )
         logger.info(
-            "Analysis completed: %d files, %d findings, risk %d (%s)",
-            summary.files_analyzed,
+            "Analysis completed: %d scanned (%d deep-analyzed, %d unsupported, "
+            "%d skipped, %d failed parse), %d findings, risk %d/10 (%s)",
+            summary.files_scanned,
+            summary.files_deep_analyzed,
+            summary.files_unsupported,
+            summary.files_skipped,
+            summary.files_failed_parse,
             summary.findings_total,
             risk.score,
             risk.level,

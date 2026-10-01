@@ -100,11 +100,14 @@ REACHABILITY_FACTORS = {
     "internal": 1.0,
 }
 
-# Repository-level risk bands over the 0-100 score.
+# Repository-level risk bands over the 0-10 score.
+# These are the original 0-100 bands (75/50/25) divided by 10 and rounded to
+# integers; score rounding can shift a finding by at most one point at a band
+# edge, which is within the noise of a heuristic score.
 RISK_BANDS = (
-    (75, "critical"),
-    (50, "high"),
-    (25, "medium"),
+    (8, "critical"),
+    (5, "high"),
+    (3, "medium"),
     (0, "low"),
 )
 

@@ -1,9 +1,11 @@
 """Risk engine: deterministic, transparent, auditable scoring.
 
+Public contract: the repository score is an integer on a 0-10 scale.
+
 Formula (heuristic — NOT scientifically validated, and the output says so):
 
     per_finding_score = severity_weight * confidence_factor * reachability_factor
-    repository_score  = min(100, round(sum(per_finding_score) / 10))
+    repository_score  = min(10, round(sum(per_finding_score) / 100))
 
 Reachability is a path-based heuristic: findings in plausibly web-exposed
 code (views, routes, handlers, controllers, APIs) get a 1.25 multiplier.
@@ -31,7 +33,10 @@ from utils.constants import (
     SEVERITY_WEIGHTS,
 )
 
-DIVISOR = 10
+# Divisor mapping total weighted points onto the public 0-10 score scale.
+# Per-finding raw points (severity_weight * confidence_factor *
+# reachability_factor) are unchanged; only the aggregate is rescaled.
+SCORE_DIVISOR = 100
 
 
 def _level_for(score: int) -> str:
@@ -58,7 +63,7 @@ def finding_score(finding: Finding) -> float:
 def calculate_risk(findings: list[Finding]) -> RiskResult:
     points = [finding_score(f) for f in findings]
     total = round(sum(points), 2)
-    score = min(100, round(total / DIVISOR))
+    score = min(10, round(total / SCORE_DIVISOR))
     breakdown = RiskBreakdown(
         severity_weights=dict(SEVERITY_WEIGHTS),
         confidence_factors=dict(CONFIDENCE_FACTORS),
@@ -71,7 +76,7 @@ def calculate_risk(findings: list[Finding]) -> RiskResult:
 
 # Re-export for tests and introspection.
 __all__ = [
-    "DIVISOR",
+    "SCORE_DIVISOR",
     "calculate_risk",
     "finding_score",
     "reachability_factor",

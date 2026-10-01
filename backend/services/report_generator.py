@@ -19,9 +19,10 @@ class ReportGenerator:
         lines = [
             f"# CodeAudit Report — {repo.owner}/{repo.name}",
             "",
-            f"Files analyzed: {summary.files_analyzed} "
-            f"({summary.files_skipped} skipped, {summary.files_failed_parse} failed to parse)",
-            f"Findings: {summary.findings_total} | Risk: {risk.score}/100 ({risk.level})",
+            f"Files: {summary.files_discovered} discovered, {summary.files_scanned} scanned "
+            f"({summary.files_deep_analyzed} deep-analyzed, {summary.files_unsupported} unsupported, "
+            f"{summary.files_skipped} skipped, {summary.files_failed_parse} failed to parse)",
+            f"Findings: {summary.findings_total} | Risk: {risk.score}/10 ({risk.level})",
             "",
             "## Findings",
         ]

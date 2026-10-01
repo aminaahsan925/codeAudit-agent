@@ -9,7 +9,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class Severity(str, Enum):
@@ -99,7 +99,8 @@ class RiskBreakdown(BaseModel):
     formula: str = Field(
         default=(
             "per_finding_score = severity_weight * confidence_factor * reachability_factor; "
-            "repository_score = min(100, round(sum(per_finding_score) / 10)). "
+            "repository_score = min(10, round(sum(per_finding_score) / 100)), "
+            "an integer on a 0-10 scale. "
             "reachability_factor is 1.25 when the finding's file path suggests "
             "web-exposed code (views/routes/handlers/controllers/api), else 1.0. "
             "Weights are heuristic and not scientifically validated."
@@ -113,21 +114,69 @@ class RiskBreakdown(BaseModel):
 
 
 class RiskResult(BaseModel):
-    score: int = Field(..., ge=0, le=100)
+    score: int = Field(..., ge=0, le=10, description="Repository risk on a 0-10 scale")
     level: str  # critical | high | medium | low
     breakdown: RiskBreakdown
 
 
 class AnalysisSummary(BaseModel):
-    files_discovered: int
-    files_analyzed: int
-    files_skipped: int
-    files_failed_parse: int
+    """File accounting for one analysis run.
+
+    Every discovered file lands in exactly one terminal bucket:
+    deep-analyzed, unsupported, skipped, or parse-failed.
+
+    Reconciliation invariant (enforced below):
+        files_discovered == files_deep_analyzed + files_unsupported
+                            + files_skipped + files_failed_parse
+        files_scanned    == files_deep_analyzed + files_unsupported
+                            + files_failed_parse
+    """
+
+    files_discovered: int = Field(
+        ..., description="Every file entry the walk encountered (dirs excluded)"
+    )
+    files_scanned: int = Field(
+        ..., description="Passed exclusion filters; read and content-sniffed"
+    )
+    files_deep_analyzed: int = Field(
+        ..., description="Python files successfully parsed and run through detectors"
+    )
+    files_unsupported: int = Field(
+        ..., description="Scanned but not deep-analyzable (non-Python / unknown language)"
+    )
+    files_skipped: int = Field(
+        ..., description="Excluded by ignore rules, limits, or unreadable (see skip_reasons)"
+    )
+    files_failed_parse: int = Field(
+        ..., description="Python files whose AST parse failed"
+    )
     findings_total: int
     findings_dropped: int = 0  # findings rejected by the evidence hard gate
     findings_by_severity: dict[str, int]
     findings_by_category: dict[str, int]
     skip_reasons: dict[str, int] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _check_accounting(self) -> "AnalysisSummary":
+        terminal = (
+            self.files_deep_analyzed
+            + self.files_unsupported
+            + self.files_skipped
+            + self.files_failed_parse
+        )
+        if self.files_discovered != terminal:
+            raise ValueError(
+                f"files_discovered ({self.files_discovered}) != deep_analyzed "
+                f"({self.files_deep_analyzed}) + unsupported ({self.files_unsupported}) "
+                f"+ skipped ({self.files_skipped}) + failed_parse ({self.files_failed_parse})"
+            )
+        if self.files_scanned != terminal - self.files_skipped:
+            raise ValueError(
+                f"files_scanned ({self.files_scanned}) != deep_analyzed "
+                f"({self.files_deep_analyzed}) + unsupported ({self.files_unsupported}) "
+                f"+ failed_parse ({self.files_failed_parse})"
+            )
+        return self
 
 
 class AnalysisResult(BaseModel):
