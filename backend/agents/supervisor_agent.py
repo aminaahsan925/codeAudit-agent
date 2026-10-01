@@ -76,7 +76,7 @@ from services.ai_context_builder import AIContext
 from services.ai_errors import AIError
 from services.ai_provider import AIProvider, StubAIProvider
 from services.ai_result_processor import apply_assessments
-from services.nemotron_service import NemotronService
+from services.provider_factory import build_ai_provider
 from services.orchestrator import AnalysisOrchestrator
 from services.prompts.specialist_review import (
     CODEAUDIT_SPECIALIST_REVIEW_PROMPT_V1,
@@ -158,11 +158,12 @@ class SupervisorAgent:
             return StubAIProvider()
         if self._injected_provider is not None:
             return self._injected_provider
-        # Auto: real Nemotron when configured; otherwise deterministic-only.
-        # The agent MODE is the explicit control here (it supersedes the
-        # legacy CODEAUDIT_AI_ENABLED kill-switch for supervisor runs).
-        service = NemotronService()
-        if service.is_configured:
+        # Auto: configured provider (Nebius default, Groq opt-in) when
+        # available; otherwise deterministic-only. The agent MODE is the
+        # explicit control here (it supersedes the legacy
+        # CODEAUDIT_AI_ENABLED kill-switch for supervisor runs).
+        service = build_ai_provider()
+        if service is not None:
             return service
         logger.info("Supervisor: no AI provider configured; deterministic-only")
         return None
@@ -304,7 +305,11 @@ class SupervisorAgent:
 
         ai_calls_made += specialist_reviews
         ai_status = self._ai_status(
-            mode, evidence_result, specialist_reviews, len(validated)
+            mode,
+            evidence_result,
+            specialist_reviews,
+            len(validated),
+            provider_name=getattr(provider, "name", "") or "",
         )
 
         # Deterministic fusion with provenance.
@@ -498,6 +503,7 @@ class SupervisorAgent:
         evidence: EvidenceAgentResult | None,
         specialist_reviews: int,
         deterministic_count: int,
+        provider_name: str = "",
     ) -> AIStatus:
         if mode == "free" or evidence is None:
             return AIStatus(
@@ -513,9 +519,15 @@ class SupervisorAgent:
             "budget_exhausted": AIStatusValue.UNAVAILABLE,
         }
         total_calls = meta.model_calls + specialist_reviews
+        # Attribute the result to the provider that actually ran, never a
+        # hardcoded default: "nemotron" is only the legacy fallback.
+        resolved_provider = (
+            provider_name
+            or ("nemotron" if evidence.status == "enabled" else (meta.model_used or ""))
+        )
         ai_status = AIStatus(
             status=status_map.get(evidence.status, AIStatusValue.DISABLED),
-            provider="nemotron" if evidence.status == "enabled" else (meta.model_used or ""),
+            provider=resolved_provider,
             model=meta.model_used,
             prompt_version=meta.prompt_version,
             model_calls=total_calls,

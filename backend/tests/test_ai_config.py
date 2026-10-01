@@ -48,7 +48,7 @@ def test_invalid_ai_env_falls_back_to_defaults(monkeypatch):
 
 def test_ai_disabled_flag_selects_no_provider(monkeypatch):
     monkeypatch.setattr(
-        "services.orchestrator.settings",
+        "services.provider_factory.settings",
         SimpleNamespace(ai_enabled=False),
     )
     assert AnalysisOrchestrator._default_ai_provider() is None
@@ -59,10 +59,7 @@ def test_missing_credentials_selects_no_provider(monkeypatch):
     monkeypatch.delenv("NEMOTRON_MODEL", raising=False)
     # Fresh Settings read the cleaned environment (hermetic either way).
     monkeypatch.setattr("services.nemotron_service.settings", Settings())
-    monkeypatch.setattr(
-        "services.orchestrator.settings",
-        SimpleNamespace(ai_enabled=True),
-    )
+    monkeypatch.setattr("services.provider_factory.settings", Settings())
     from services.nemotron_service import NemotronService
 
     assert not NemotronService().is_configured

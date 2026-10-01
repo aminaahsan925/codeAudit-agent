@@ -45,9 +45,8 @@ from services.ai_errors import (
 from services.ai_provider import AIProvider
 from services.ai_result_processor import merge_ai_results
 from services.code_parser import parse_file
-from services.nemotron_service import NemotronService
+from services.provider_factory import build_ai_provider
 from services.repository_scanner import ScanResult, supports_deep_analysis
-from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +62,9 @@ class AnalysisOrchestrator:
     """
 
     def __init__(self, ai_provider: AIProvider | None = None) -> None:
-        # None means "auto": use the real NemotronService when it is
-        # configured, otherwise run deterministic-only (AI disabled).
+        # None means "auto": use the configured AI provider (Nebius
+        # default, Groq opt-in) when it is configured, otherwise run
+        # deterministic-only (AI disabled).
         # Tests inject a fake provider; production never sees the stub.
         if ai_provider is None:
             ai_provider = self._default_ai_provider()
@@ -72,16 +72,9 @@ class AnalysisOrchestrator:
 
     @staticmethod
     def _default_ai_provider() -> AIProvider | None:
-        if not settings.ai_enabled:
-            logger.info("AI investigation disabled by CODEAUDIT_AI_ENABLED=false")
-            return None
-        service = NemotronService()
-        if not service.is_configured:
-            logger.info(
-                "AI investigation disabled: NEBIUS_API_KEY/NEMOTRON_MODEL not set"
-            )
-            return None
-        return service
+        # Auto: configured provider (Nebius default, Groq opt-in). None
+        # means deterministic-only, exactly as before.
+        return build_ai_provider()
 
     # -- Tools -----------------------------------------------------------
     # Each tool does one thing and is independently testable. Phase 3's

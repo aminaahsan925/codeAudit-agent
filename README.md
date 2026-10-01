@@ -351,16 +351,22 @@ remain the evidence anchor, and the risk score stays fully deterministic.
 ```
 AnalysisOrchestrator
         ↓  AIProvider.investigate(findings, context) -> AIInvestigationResult
-   ┌────┴─────┐
-   ▼          ▼
-FakeAIProvider   NemotronService  (real OpenAI-compatible client → /v1)
-(tests only)     (production)
+   ┌────┴──────────────────┐
+   ▼                       ▼
+FakeAIProvider   NemotronService (Nebius)   GroqService (Groq)
+(tests only)     (default, hackathon target) (opt-in via CODEAUDIT_AI_PROVIDER=groq)
 ```
 
 The orchestrator depends on the `AIProvider` protocol, never on SDK
-details. `NemotronService` is auto-selected when `NEBIUS_API_KEY` and
-`NEMOTRON_MODEL` are set; otherwise analysis runs deterministic-only
-(`ai.status: "disabled"`). Tests inject `FakeAIProvider` — a fake is never
+details. `services/provider_factory.py:build_ai_provider()` selects the
+provider: `NemotronService` when `NEBIUS_API_KEY` and `NEMOTRON_MODEL` are
+set (default), `GroqService` when `CODEAUDIT_AI_PROVIDER=groq` with
+`GROQ_API_KEY`/`GROQ_MODEL` set (free no-card tier, useful for live
+AI-layer testing); otherwise analysis runs deterministic-only
+(`ai.status: "disabled"`). `GroqService` subclasses `NemotronService`,
+reusing the bounded-context, structured-output, and error machinery —
+only identity and defaults differ, so reports attribute results to the
+provider that actually ran. Tests inject `FakeAIProvider` — a fake is never
 silently active in production.
 
 ### Configuration
@@ -380,6 +386,7 @@ silently active in production.
 | `CODEAUDIT_AI_MAX_FILE_CHARS` | `6000` | Per-file excerpt cap |
 | `CODEAUDIT_AI_MAX_FINDINGS` | `25` | Max deterministic findings sent |
 | `CODEAUDIT_AI_CONTEXT_LINES` | `15` | Source lines around each finding |
+| `CODEAUDIT_AI_RESPONSE_FORMAT` | `json_object` | Set to `none` if your Nemotron deployment rejects `response_format` (answer is read from `reasoning_content` when `content` is empty) |
 
 Do **not** copy a model identifier from an old guide — resolve it at runtime:
 
