@@ -54,14 +54,14 @@ def test_groq_selected_with_key(monkeypatch):
         monkeypatch,
         CODEAUDIT_AI_PROVIDER="groq",
         GROQ_API_KEY="gsk-test",
-        GROQ_MODEL="llama-3.3-70b-versatile",
+        GROQ_MODEL="openai/gpt-oss-120b",
     )
     provider = build_ai_provider(cfg)
     assert isinstance(provider, GroqService)
     assert provider.name == "groq"
     assert provider.is_configured
     assert provider.base_url == "https://api.groq.com/openai/v1"
-    assert provider.model == "llama-3.3-70b-versatile"
+    assert provider.model == "openai/gpt-oss-120b"
 
 
 def test_groq_without_key_falls_back_to_none(monkeypatch):
@@ -75,7 +75,7 @@ def test_ai_disabled_returns_none(monkeypatch):
         CODEAUDIT_AI_ENABLED="false",
         CODEAUDIT_AI_PROVIDER="groq",
         GROQ_API_KEY="gsk-test",
-        GROQ_MODEL="llama-3.3-70b-versatile",
+        GROQ_MODEL="openai/gpt-oss-120b",
     )
     assert build_ai_provider(cfg) is None
 
@@ -94,26 +94,26 @@ def test_unknown_provider_falls_back_to_nebius(monkeypatch):
 
 def test_groq_service_investigation_reports_groq(monkeypatch):
     cfg = _cfg(
-        monkeypatch, GROQ_API_KEY="gsk-test", GROQ_MODEL="llama-3.3-70b-versatile"
+        monkeypatch, GROQ_API_KEY="gsk-test", GROQ_MODEL="openai/gpt-oss-120b"
     )
     client = FakeOpenAIClient(response_text=VALID_JSON)
     service = GroqService(
         api_key="gsk-test",
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         client_factory=lambda: client,
         cfg=cfg,
     )
     result = service.investigate([], _context())
     assert result.status == "enabled"
     assert result.provider_name == "groq"
-    assert result.model == "llama-3.3-70b-versatile"
-    assert client.last_create_kwargs["model"] == "llama-3.3-70b-versatile"
+    assert result.model == "openai/gpt-oss-120b"
+    assert client.last_create_kwargs["model"] == "openai/gpt-oss-120b"
 
 
 def test_groq_defaults_come_from_config(monkeypatch):
     cfg = _cfg(monkeypatch)  # no env at all
     service = GroqService(cfg=cfg)
-    assert service.model == "llama-3.3-70b-versatile"
+    assert service.model == "openai/gpt-oss-120b"
     assert service.base_url == "https://api.groq.com/openai/v1"
     assert not service.is_configured  # no key -> not configured
 

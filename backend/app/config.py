@@ -82,7 +82,7 @@ class Settings:
     )
     groq_api_key: str = field(default_factory=lambda: os.environ.get("GROQ_API_KEY", ""))
     groq_model: str = field(
-        default_factory=lambda: os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+        default_factory=lambda: os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
     )
     groq_base_url: str = field(
         default_factory=lambda: os.environ.get(
