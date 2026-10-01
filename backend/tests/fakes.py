@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from models.schemas import AIAssessment, AIFindingCandidate
-from services.ai_provider import AIInvestigationResult
+from models.schemas import AIAssessment, AIFindingCandidate, FixProposal
+from services.ai_provider import AIInvestigationResult, FixProposalResult
 
 
 class _FakeChatCompletions:
@@ -74,14 +74,22 @@ class FakeAIProvider:
         status: str = "enabled",
         exc: Exception | None = None,
         error_code: str | None = None,
+        fix_proposal: FixProposal | None = None,
+        fix_status: str = "enabled",
+        fix_exc: Exception | None = None,
     ):
         self._assessments = list(assessments or [])
         self._candidates = list(candidates or [])
         self._status = status
         self._exc = exc
         self._error_code = error_code
+        self._fix_proposal = fix_proposal
+        self._fix_status = fix_status
+        self._fix_exc = fix_exc
         self.received_findings = None
         self.received_context = None
+        self.received_fix_finding = None
+        self.received_fix_context = None
 
     def investigate(self, findings, context) -> AIInvestigationResult:
         self.received_findings = findings
@@ -96,6 +104,23 @@ class FakeAIProvider:
             provider_name=self.name,
             model="fake-model",
             prompt_version="fake-prompt-v1",
+            model_calls=1,
+            context_chars=42,
+            duration_ms=5,
+        )
+
+    def propose_fix(self, finding, context) -> FixProposalResult:
+        self.received_fix_finding = finding
+        self.received_fix_context = context
+        if self._fix_exc is not None:
+            raise self._fix_exc
+        return FixProposalResult(
+            status=self._fix_status,
+            proposal=self._fix_proposal,
+            error_code=self._error_code,
+            provider_name=self.name,
+            model="fake-model",
+            prompt_version="fake-fix-prompt-v1",
             model_calls=1,
             context_chars=42,
             duration_ms=5,
