@@ -67,6 +67,9 @@ Only the AI variables matter in Phase 2; everything else has safe defaults.
 | `CODEAUDIT_FIX_MAX_TOKENS` | Output cap per fix proposal (Phase 3) | `1500` |
 | `CODEAUDIT_FIX_MAX_CHANGES` | Max changes accepted per proposal (Phase 3) | `5` |
 | `CODEAUDIT_MAX_REMEDIATIONS_PER_REQUEST` | Hard cap on batch remediation (Phase 3) | `3` |
+| `CODEAUDIT_AGENT_MODE` | Multi-agent operating mode: `free` (0 AI calls), `economy` (1+1), `full` (4+2) | `free` |
+| `CODEAUDIT_MAX_AI_CALLS_PER_ANALYSIS` | Explicit override of the per-analysis AI call cap | mode default |
+| `CODEAUDIT_MAX_AI_CALLS_PER_REMEDIATION` | Explicit override of the per-remediation AI call cap | mode default |
 | `GITHUB_TOKEN` | Raises GitHub API rate limits for metadata | — |
 | `CODEAUDIT_MAX_FILE_SIZE` | Skip files larger than this (bytes) | `1000000` |
 | `CODEAUDIT_MAX_FILES` | Max files analyzed per repo | `2000` |
@@ -267,12 +270,19 @@ StaticAnalyzer.analyze_static — 10 deterministic detectors (Python only),
 FindingValidator.validate_findings — HARD GATE: file must exist, line must
       exist, evidence must match the cited line; failures are dropped
       ↓
-AI investigation (Phase 2, optional) — Nemotron reasons over the
-      deterministic evidence: assesses each finding (confirmed / uncertain /
-      unlikely), proposes additional issues; every AI output is normalized,
-      schema-validated, deduplicated against deterministic anchors, and run
-      through the SAME evidence hard gate. AI failure degrades gracefully:
-      deterministic findings are always returned
+SupervisorAgent — multi-agent coordination (Phase 3 upgrade): builds the
+      execution plan, runs security/performance/quality specialists IN
+      PARALLEL over the validated findings, then (economy/full) a budgeted
+      Nemotron evidence review over specialist outputs + bounded shared
+      excerpts; deterministic fusion merges everything (anchors win,
+      provenance stamped). The AI step is the evidence agent's bounded call:
+      Nemotron reasons over the deterministic evidence, assessing each
+      finding (confirmed / uncertain / unlikely) and proposing additional
+      issues; every AI output is normalized, schema-validated, deduplicated
+      against deterministic anchors, and run through the SAME evidence hard
+      gate. AI failure degrades gracefully: deterministic findings are
+      always returned. In free mode the evidence step is skipped entirely —
+      zero Nebius calls by construction
       ↓
 RiskEngine.score_risk — deterministic, transparent formula with a full
       breakdown in the response: 0-10 integer score, bands 8+/5+/3+,
@@ -282,10 +292,12 @@ RiskEngine.score_risk — deterministic, transparent formula with a full
 Structured AnalysisResult JSON (includes an `ai` metadata block)
 ```
 
-The `AnalysisOrchestrator` exposes each stage as a tool-style method
-(`fetch_repo`, `scan_files`, `parse`, `analyze_static`, `validate_findings`,
-`score_risk`) — the honest single-agent boundary Phase 3's Nemotron reasoning
-will drive.
+The `SupervisorAgent` coordinates each stage as a specialist agent
+(`agents/supervisor_agent.py`) — security, performance, and quality triage in
+parallel, a budgeted Nemotron evidence review per the configured agent mode,
+and deterministic fusion. The `AnalysisOrchestrator` remains the tool layer
+the supervisor drives (`fetch_repo`, `scan_files`, `parse`, `analyze_static`,
+`validate_findings`, `score_risk`).
 
 ## Project structure
 
@@ -515,14 +527,79 @@ test asserts the original repo is byte-identical across 8 degradation paths;
 API tests cover `/remediate` and `/remediate/batch` (404/400 mapping, cap
 enforcement). No live Nemotron remediation calls — none have been measured.
 
+## Multi-agent backend (Phase 3 upgrade)
+
+The analysis and remediation paths are now coordinated by a **Supervisor
+agent** driving specialist agents — a hybrid design, not a model-everywhere
+design. The honest labeling matters: the specialists that do the real
+detection work are **deterministic**; Nemotron is used only where judgment
+adds value, inside hard cost caps.
+
+### Agent roster
+
+| Agent | Kind | Role |
+|---|---|---|
+| `supervisor` | deterministic | Builds the execution plan, enforces AI budgets, consolidates results |
+| `security` | hybrid | Triages validated security findings; budgeted AI review in full mode |
+| `performance` | hybrid | Conservative AST rules (nested loops, concat-in-loop, expensive-call-in-loop); budgeted AI review in full mode |
+| `quality` | hybrid | Wraps analyzer quality detectors + conservative AST extras (branch complexity, parameter count); budgeted AI review in full mode |
+| `evidence` | AI | One bounded Nemotron review over specialist findings + shared excerpts (economy/full) |
+| `fusion` | deterministic | Merges specialist + evidence outputs; deterministic anchors win; stamps `provenance` |
+| `fix` | AI | Proposes a structured fix on explicit request only; never writes files |
+| `verification` | deterministic | Coordinates deterministic verification; never overrides the verdict |
+| `patch_guard` | deterministic | Validates every proposed change (path/line/old_text/overlap gates) |
+
+The supervisor runs the three specialists **in parallel** (they are
+independent — each triages only its own category). The evidence agent sees
+the specialists' outputs plus a bounded shared context (source excerpts, not
+whole files). Fusion deduplicates on file/line/detector and stamps
+`provenance: {detected_by, reviewed_by, fixed_by, verified_by}` on every
+finding.
+
+### Modes and cost control (`CODEAUDIT_AGENT_MODE`)
+
+| Mode | Analysis AI calls | Remediation AI calls | Behavior |
+|---|---|---|---|
+| `free` (default) | 0 | 0 | Deterministic specialists only. The supervisor forces the stub provider — **zero Nebius calls by construction**, even if a provider is injected |
+| `economy` | 1 | 1 | One Nemotron evidence-review call; remediation calls Nemotron only on explicit user request |
+| `full` | 4 | 2 | Selective multi-agent reasoning: one budgeted review per specialist with findings, then evidence review |
+
+Overrides: `CODEAUDIT_MAX_AI_CALLS_PER_ANALYSIS` /
+`CODEAUDIT_MAX_AI_CALLS_PER_REMEDIATION` (explicit caps; never unlimited).
+Budgets are enforced by a thread-safe `AIBudgetManager` owned by the
+supervisor — the **sole** enforcement point; analysis and remediation
+budgets are separate. A request-scoped `AICallCache` deduplicates identical
+AI calls within a run. Budget exhaustion surfaces as the controlled status
+`AI_BUDGET_EXHAUSTED` — never an exception, never a silent extra call.
+
+### Guarantees (unchanged, now per-agent)
+
+- **Deterministic anchors win:** the evidence agent and fusion can attach
+  reasoning and metadata, but never rewrite a finding's id, file, line,
+  evidence, severity, or category.
+- **Evidence hard gate** applies to every finding, human- or AI-sourced.
+- **Fix only on request:** analysis never remediates; `/remediate` runs the
+  FIND → FIX → VERIFY cycle with `agent_trail` recording every participant.
+- **Original repository never modified** — patches apply in an isolated
+  temp workspace that is always cleaned up.
+- **No fake benchmarks:** the demo fixture
+  (`backend/tests/fixtures/multiagent_demo/`) is a controlled 6-finding
+  repo used by hermetic tests, not a performance claim.
+
+Every `AnalysisResult` now carries `agents` (per-agent status, timings,
+model calls, prompt versions) and `ai_budget` (mode, limit, used,
+remaining); every `RemediationResult` carries `agent_trail`.
+
 ## Design principles
 
 - **Evidence first:** a finding without verifiable file + line + matching
   source snippet does not ship.
 - **Deterministic before AI:** anything reliably detectable by structure or
   pattern never waits for a model.
-- **No fake agents:** one real orchestrator with tools; specialist roles only
-  if they earn their place later.
+- **No fake agents:** every named agent does real work — deterministic
+  specialists triage real findings, the supervisor enforces real budgets,
+  and AI agents only act inside those budgets. Agent kinds are labeled
+  honestly (`deterministic` / `hybrid` / `ai`) in the registry.
 - **Safe by default:** untrusted repos are cloned shallow, never executed,
   and analyzed under strict size/time limits.
 - **Honest scoring:** the risk formula is shown in every response.
@@ -530,8 +607,10 @@ enforcement). No live Nemotron remediation calls — none have been measured.
 ## Limitations
 
 - Deep analysis is Python-only; other languages are detected but not parsed.
-- 10 deterministic detectors; Nemotron adds reasoning but no new detector families yet.
-- AI enrichment is one investigation call per analysis (no per-finding agent fan-out).
+- 10 deterministic detectors plus the specialists' conservative AST rules;
+  Nemotron adds reasoning but no new detector families yet.
+- AI enrichment is hard-capped per mode (free 0, economy 1, full 4 per
+  analysis); no per-finding agent fan-out.
 - No PDF reports, no frontend, Docker, CI/CD, auth, or database — intentionally
   out of scope.
 - Remediation is backend-only: `POST /remediate` proposes and verifies fixes,
