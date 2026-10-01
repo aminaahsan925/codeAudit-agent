@@ -73,6 +73,23 @@ class Settings:
         )
     )
 
+    # --- Alternate AI provider: Groq (OpenAI-compatible, free no-card tier).
+    # Nebius remains the default and the hackathon target; Groq is an
+    # opt-in second provider for live AI-layer testing without a Nebius key.
+    # Select with CODEAUDIT_AI_PROVIDER=groq (default: nebius).
+    ai_provider: str = field(
+        default_factory=lambda: os.environ.get("CODEAUDIT_AI_PROVIDER", "nebius").strip().lower()
+    )
+    groq_api_key: str = field(default_factory=lambda: os.environ.get("GROQ_API_KEY", ""))
+    groq_model: str = field(
+        default_factory=lambda: os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+    )
+    groq_base_url: str = field(
+        default_factory=lambda: os.environ.get(
+            "GROQ_BASE_URL", "https://api.groq.com/openai/v1"
+        )
+    )
+
     # --- AI reasoning tuning (all bounded; see services/nemotron_service.py) ---
     ai_enabled: bool = field(default_factory=lambda: _get_bool("CODEAUDIT_AI_ENABLED", True))
     ai_temperature: float = field(default_factory=lambda: _get_float("CODEAUDIT_AI_TEMPERATURE", 0.2))
@@ -85,6 +102,13 @@ class Settings:
     ai_max_file_chars: int = field(default_factory=lambda: _get_int("CODEAUDIT_AI_MAX_FILE_CHARS", 6_000))
     ai_max_findings: int = field(default_factory=lambda: _get_int("CODEAUDIT_AI_MAX_FINDINGS", 25))
     ai_context_lines: int = field(default_factory=lambda: _get_int("CODEAUDIT_AI_CONTEXT_LINES", 15))
+    # Reasoning models (e.g. NVIDIA Nemotron) may reject the strict
+    # response_format parameter. "json_object" (default) sends it;
+    # "none" omits it — the versioned prompts still demand JSON-only and
+    # the parser recovers fenced JSON deterministically.
+    ai_response_format: str = field(
+        default_factory=lambda: os.environ.get("CODEAUDIT_AI_RESPONSE_FORMAT", "json_object")
+    )
 
     # --- Remediation tuning (Phase 3: bounded fix generation) ---
     fix_max_context_chars: int = field(default_factory=lambda: _get_int("CODEAUDIT_FIX_MAX_CONTEXT_CHARS", 12_000))

@@ -50,6 +50,31 @@ from services.prompts import (
 
 logger = logging.getLogger(__name__)
 
+
+def _build_http_client() -> Any:
+    """Build the httpx client for the OpenAI-compatible SDK.
+
+    Uses trust_env=False with an explicit proxy so exotic NO_PROXY entries
+    (e.g. bracketed IPv6 literals, as found in some sandboxes) cannot crash
+    client construction — httpx fails parsing those when it builds its
+    proxy map from the environment. Egress behavior is otherwise unchanged:
+    the configured HTTPS proxy is still used when present, and TLS is
+    verified against SSL_CERT_FILE/REQUESTS_CA_BUNDLE when set (the sandbox
+    egress proxy terminates TLS with its own CA, mirroring curl's
+    CURL_CA_BUNDLE behavior).
+    """
+    import os
+
+    import httpx
+
+    proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    verify: Any = (
+        os.environ.get("SSL_CERT_FILE") or os.environ.get("REQUESTS_CA_BUNDLE") or True
+    )
+    if proxy:
+        return httpx.Client(trust_env=False, proxy=proxy, verify=verify)
+    return httpx.Client(trust_env=False, verify=verify)
+
 _FENCED_JSON_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 
 
@@ -90,6 +115,7 @@ class NemotronService:
         self.fix_temperature = cfg.fix_temperature
         self.fix_max_tokens = cfg.fix_max_tokens
         self.fix_max_changes = max(1, cfg.fix_max_changes)
+        self.response_format = (cfg.ai_response_format or "json_object").strip().lower()
         self._client_factory = client_factory or self._default_client_factory
         self._client: Any | None = None
 
@@ -109,6 +135,7 @@ class NemotronService:
             api_key=self.api_key,
             timeout=self.timeout_s,
             max_retries=self.max_retries,
+            http_client=_build_http_client(),
         )
 
     def _get_client(self) -> Any:
@@ -164,11 +191,12 @@ class NemotronService:
 
         try:
             response = self._get_client().chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-                response_format={"type": "json_object"},
+                **self._completion_kwargs(
+                    model=self.model,
+                    messages=messages,
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                )
             )
         except Exception as exc:  # noqa: BLE001 - mapped to typed errors
             raise self._classify_sdk_error(exc) from exc
@@ -221,11 +249,12 @@ class NemotronService:
 
         try:
             response = self._get_client().chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=self.fix_temperature,
-                max_tokens=self.fix_max_tokens,
-                response_format={"type": "json_object"},
+                **self._completion_kwargs(
+                    model=self.model,
+                    messages=messages,
+                    temperature=self.fix_temperature,
+                    max_tokens=self.fix_max_tokens,
+                )
             )
         except Exception as exc:  # noqa: BLE001 - mapped to typed errors
             raise self._classify_sdk_error(exc) from exc
@@ -259,13 +288,56 @@ class NemotronService:
 
     # -- internals ----------------------------------------------------------
 
+    def _completion_kwargs(
+        self,
+        *,
+        model: str,
+        messages: list[dict],
+        temperature: float,
+        max_tokens: int,
+    ) -> dict:
+        """Build chat.completions.create kwargs.
+
+        response_format=json_object is sent by default. Some reasoning-model
+        deployments reject it — set CODEAUDIT_AI_RESPONSE_FORMAT=none to omit
+        it (the versioned prompts still demand JSON-only output, and the
+        parser recovers fenced JSON deterministically).
+        """
+        kwargs: dict = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if self.response_format == "json_object":
+            kwargs["response_format"] = {"type": "json_object"}
+        return kwargs
+
     @staticmethod
     def _extract_content(response: Any) -> str:
+        """Extract usable text from a chat completion response.
+
+        Reasoning models (e.g. NVIDIA Nemotron) commonly return the actual
+        answer in ``message.reasoning_content`` while ``message.content`` is
+        empty or None. Prefer ``content``; fall back to ``reasoning_content``.
+        Anything else is fail-closed: raise instead of inventing output.
+        """
+        message = None
         try:
             choices = response.choices
-            text = choices[0].message.content if choices else None
+            message = choices[0].message if choices else None
         except (AttributeError, IndexError, TypeError):
-            text = None
+            message = None
+        text = None
+        if message is not None:
+            for attr in ("content", "reasoning_content"):
+                try:
+                    candidate = getattr(message, attr, None)
+                except (AttributeError, TypeError):
+                    candidate = None
+                if isinstance(candidate, str) and candidate.strip():
+                    text = candidate
+                    break
         if not isinstance(text, str) or not text.strip():
             raise AIInvalidResponse("Model returned empty or unusable content.")
         return text
