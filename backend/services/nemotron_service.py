@@ -44,7 +44,6 @@ from services.ai_errors import (
 from services.ai_provider import AIInvestigationResult, FixProposalResult
 from services.prompts import (
     CODEAUDIT_REMEDIATION_PROMPT_V1,
-    CODEAUDIT_SECURITY_PROMPT_V1,
     build_fix_messages,
     build_investigation_messages,
 )
@@ -158,9 +157,10 @@ class NemotronService:
                 "NEMOTRON_MODEL to enable AI investigation."
             )
         started = time.monotonic()
-        messages = build_investigation_messages(context)
+        builder = context.message_builder or build_investigation_messages
+        messages = builder(context)
         context_chars = len(messages[1]["content"])
-        prompt_version = CODEAUDIT_SECURITY_PROMPT_V1
+        prompt_version = context.prompt_version
 
         try:
             response = self._get_client().chat.completions.create(

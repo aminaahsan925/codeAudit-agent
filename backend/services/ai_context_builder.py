@@ -18,6 +18,7 @@ and results reproducible.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from app.config import Settings, settings
 from models.schemas import Finding, ParsedFile, RepositoryMetadata
@@ -63,6 +64,10 @@ class AIContext:
     file_blocks: list[AIContextBlock] = field(default_factory=list)
     symbols_of_interest: list[str] = field(default_factory=list)
     budget: dict = field(default_factory=dict)
+    # Phase 3 upgrade: agents may override the message builder (e.g. the
+    # evidence agent's review prompt) while reusing the same provider
+    # contract. None keeps the default investigation messages.
+    message_builder: Any = field(default=None, repr=False)
 
 
 def _numbered(lines: list[str], start: int) -> str:
