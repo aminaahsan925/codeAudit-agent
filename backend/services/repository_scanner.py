@@ -24,6 +24,16 @@ from utils.file_utils import is_binary, read_text_safe, safe_relative_path
 logger = logging.getLogger(__name__)
 
 
+class RepositoryTooLargeError(Exception):
+    """Raised when a repository exceeds the configured analysis budget.
+
+    Carries a stable machine-readable ``code`` so the API can return a
+    structured error instead of a partial, silent result.
+    """
+
+    code = "REPOSITORY_TOO_LARGE"
+
+
 def detect_language(path: Path) -> str | None:
     """Language from file extension. None for unrecognized files."""
     return LANGUAGE_BY_EXTENSION.get(path.suffix.lower())
@@ -85,11 +95,18 @@ def scan_repository(root: Path) -> ScanResult:
             _record_skip(result, "binary")
             continue
         if len(result.files) >= settings.max_files:
-            _record_skip(result, "file_limit")
-            continue
+            # Hard budget breach: fail loudly with a structured error rather
+            # than returning a partial, silent result.
+            raise RepositoryTooLargeError(
+                f"Repository exceeds the file-count budget ({settings.max_files} files). "
+                "Increase CODEAUDIT_MAX_FILES or analyze a smaller scope."
+            )
         if total_bytes + size > settings.max_total_bytes:
-            _record_skip(result, "payload_limit")
-            continue
+            raise RepositoryTooLargeError(
+                f"Repository exceeds the analysis payload budget "
+                f"({settings.max_total_bytes} bytes). Increase "
+                "CODEAUDIT_MAX_TOTAL_BYTES or analyze a smaller scope."
+            )
 
         content = read_text_safe(path)
         if content is None:

@@ -52,9 +52,11 @@ def validate_findings(
 
         actual = _normalize(lines[finding.line - 1])
         claimed = _normalize(finding.evidence or "")
-        if not claimed or claimed not in actual and actual not in claimed:
-            # Evidence must correspond to the cited line (whitespace-insensitive,
-            # allowing the evidence to be a substring of a long line).
+        # Evidence must be (a substring of) the actual cited line, compared
+        # whitespace-insensitively. The reverse containment (the real line
+        # being a substring of the claimed evidence) is NOT accepted: it would
+        # let hallucinated extra text ride along with a genuine line.
+        if not claimed or claimed not in actual:
             result.dropped.append(finding)
             result.drop_reasons["evidence_mismatch"] = result.drop_reasons.get("evidence_mismatch", 0) + 1
             continue

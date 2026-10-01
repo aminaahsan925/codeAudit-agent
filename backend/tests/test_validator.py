@@ -51,6 +51,17 @@ def test_evidence_mismatch_dropped():
     assert result.drop_reasons["evidence_mismatch"] == 1
 
 
+def test_evidence_with_hallucinated_extra_text_dropped():
+    # The real line embedded in longer claimed evidence must NOT pass:
+    # extra text could be hallucinated.
+    result = validate_findings(
+        [_finding(evidence="x = eval(user_input) and then the moon exploded")],
+        CONTENTS,
+    )
+    assert result.validated == []
+    assert result.drop_reasons["evidence_mismatch"] == 1
+
+
 def test_evidence_substring_of_long_line_passes():
     long_line = "x = eval(user_input)  # " + "padding " * 50
     contents = {"app.py": f"import os\n{long_line}\n"}

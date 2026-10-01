@@ -90,6 +90,95 @@ def test_analyze_clone_failure_maps_to_502(client: TestClient, monkeypatch):
     assert response.json()["error"]["code"] == "CLONE_FAILED"
 
 
+def test_analyze_too_large_repo_maps_to_413(client: TestClient, monkeypatch):
+    from services import repository_scanner
+
+    def boom(url, dest):
+        raise repository_scanner.RepositoryTooLargeError("budget exceeded in tests")
+
+    monkeypatch.setattr(app_main.orchestrator, "fetch_repo", boom)
+    response = client.post(
+        "/analyze", json={"repository_url": "https://github.com/demo/huge-repo"}
+    )
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "REPOSITORY_TOO_LARGE"
+
+
+def test_analyze_unexpected_error_maps_to_structured_500(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    # raise_server_exceptions=False: observe the 500 response the handler
+    # produces (Starlette's ServerErrorMiddleware re-raises the original
+    # exception to the test client otherwise).
+    local_client = TestClient(app, raise_server_exceptions=False)
+
+    def boom(url, dest):
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(app_main.orchestrator, "fetch_repo", boom)
+    response = local_client.post(
+        "/analyze", json={"repository_url": "https://github.com/demo/vuln-app"}
+    )
+    assert response.status_code == 500
+    body = response.json()
+    assert body["error"]["code"] == "INTERNAL_ERROR"
+    # No internals leak into the response.
+    assert "kaboom" not in body["error"]["message"]
+
+
+def test_dropped_findings_surfaced_in_summary(fixtures_dir, monkeypatch):
+    """Validator drops are reported in the summary, never silently swallowed."""
+    import tempfile
+
+    from models.schemas import (
+        Category,
+        Confidence,
+        Finding,
+        FindingSource,
+        Severity,
+    )
+    from services.orchestrator import AnalysisOrchestrator
+
+    ghost = Finding(
+        id="ghost",
+        category=Category.SECURITY,
+        severity=Severity.HIGH,
+        title="t",
+        description="d",
+        file="ghost.py",
+        line=1,
+        evidence="nope",
+        confidence=Confidence.HIGH,
+        source=FindingSource.DETERMINISTIC,
+        detector="d",
+    )
+    orchestrator = AnalysisOrchestrator()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "demo"
+        root.mkdir()
+        shutil.copytree(fixtures_dir / "safe_python", root / "ok")
+        monkeypatch.setattr(orchestrator, "analyze_static", lambda scan: [ghost])
+        result = orchestrator.run_on_local_path(root)
+
+    assert result.summary.findings_total == 0
+    assert result.summary.findings_dropped == 1
+    assert result.findings == []
+
+
+def test_empty_repo_summary_reconciles(tmp_path):
+    from services.orchestrator import AnalysisOrchestrator
+
+    result = AnalysisOrchestrator().run_on_local_path(tmp_path)
+    assert result.summary.files_discovered == 0
+    assert result.summary.files_analyzed == 0
+    assert result.summary.files_skipped == 0
+    assert result.summary.files_failed_parse == 0
+    assert result.summary.findings_total == 0
+    assert result.risk.score == 0
+
+
 def test_orchestrator_full_pipeline_on_fixtures(fixtures_dir):
     """The whole pipeline over the demo fixtures: the acceptance shape."""
     from services.orchestrator import AnalysisOrchestrator

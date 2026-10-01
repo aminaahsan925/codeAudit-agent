@@ -2,8 +2,12 @@
 
 Formula (heuristic — NOT scientifically validated, and the output says so):
 
-    per_finding_score = severity_weight * confidence_factor
+    per_finding_score = severity_weight * confidence_factor * reachability_factor
     repository_score  = min(100, round(sum(per_finding_score) / 10))
+
+Reachability is a path-based heuristic: findings in plausibly web-exposed
+code (views, routes, handlers, controllers, APIs) get a 1.25 multiplier.
+This is documented path-substring matching, not data-flow analysis.
 
 The weights, the per-finding contributions, and the formula itself are
 returned in the RiskResult breakdown so anyone can audit the score.
@@ -19,7 +23,13 @@ from models.schemas import (
     RiskResult,
     Severity,
 )
-from utils.constants import CONFIDENCE_FACTORS, RISK_BANDS, SEVERITY_WEIGHTS
+from utils.constants import (
+    CONFIDENCE_FACTORS,
+    REACHABILITY_FACTORS,
+    REACHABILITY_PATH_HINTS,
+    RISK_BANDS,
+    SEVERITY_WEIGHTS,
+)
 
 DIVISOR = 10
 
@@ -31,10 +41,18 @@ def _level_for(score: int) -> str:
     return "low"
 
 
+def reachability_factor(relative_path: str) -> float:
+    """1.25 for web-exposed-looking paths, 1.0 otherwise (documented heuristic)."""
+    lowered = (relative_path or "").lower()
+    if any(hint in lowered for hint in REACHABILITY_PATH_HINTS):
+        return REACHABILITY_FACTORS["exposed"]
+    return REACHABILITY_FACTORS["internal"]
+
+
 def finding_score(finding: Finding) -> float:
     severity_weight = SEVERITY_WEIGHTS[finding.severity.value]
     confidence_factor = CONFIDENCE_FACTORS[finding.confidence.value]
-    return severity_weight * confidence_factor
+    return severity_weight * confidence_factor * reachability_factor(finding.file)
 
 
 def calculate_risk(findings: list[Finding]) -> RiskResult:
@@ -44,6 +62,7 @@ def calculate_risk(findings: list[Finding]) -> RiskResult:
     breakdown = RiskBreakdown(
         severity_weights=dict(SEVERITY_WEIGHTS),
         confidence_factors=dict(CONFIDENCE_FACTORS),
+        reachability_factors=dict(REACHABILITY_FACTORS),
         findings_counted=len(findings),
         total_weighted_points=total,
     )
@@ -55,6 +74,7 @@ __all__ = [
     "DIVISOR",
     "calculate_risk",
     "finding_score",
+    "reachability_factor",
     "Severity",
     "Confidence",
 ]

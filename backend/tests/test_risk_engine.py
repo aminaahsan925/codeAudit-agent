@@ -1,18 +1,18 @@
 """Tests for the risk engine: deterministic, transparent, auditable."""
 
 from models.schemas import Category, Confidence, Finding, FindingSource, Severity
-from services.risk_engine import DIVISOR, calculate_risk, finding_score
-from utils.constants import CONFIDENCE_FACTORS, SEVERITY_WEIGHTS
+from services.risk_engine import DIVISOR, calculate_risk, finding_score, reachability_factor
+from utils.constants import CONFIDENCE_FACTORS, REACHABILITY_FACTORS, SEVERITY_WEIGHTS
 
 
-def _finding(severity, confidence):
+def _finding(severity, confidence, file="a.py"):
     return Finding(
-        id=f"t:{severity}:{confidence}",
+        id=f"t:{severity}:{confidence}:{file}",
         category=Category.SECURITY,
         severity=severity,
         title="T",
         description="D",
-        file="a.py",
+        file=file,
         line=1,
         evidence="e",
         confidence=confidence,
@@ -55,6 +55,26 @@ def test_breakdown_exposes_formula_and_weights():
     assert b.total_weighted_points == SEVERITY_WEIGHTS["high"] * 1.0
     # score = min(100, round(total / DIVISOR))
     assert risk.score == min(100, round(b.total_weighted_points / DIVISOR))
+
+
+def test_reachability_factor_web_exposed_paths():
+    assert reachability_factor("views.py") == REACHABILITY_FACTORS["exposed"]
+    assert reachability_factor("app/api/routes.py") == REACHABILITY_FACTORS["exposed"]
+    assert reachability_factor("utils/helpers.py") == REACHABILITY_FACTORS["internal"]
+    assert reachability_factor("models.py") == REACHABILITY_FACTORS["internal"]
+
+
+def test_exposed_finding_scores_higher():
+    internal = _finding(Severity.HIGH, Confidence.HIGH, file="utils.py")
+    exposed = _finding(Severity.HIGH, Confidence.HIGH, file="views.py")
+    assert finding_score(exposed) > finding_score(internal)
+    assert finding_score(exposed) == finding_score(internal) * REACHABILITY_FACTORS["exposed"]
+
+
+def test_breakdown_exposes_reachability():
+    risk = calculate_risk([_finding(Severity.HIGH, Confidence.HIGH, file="views.py")])
+    assert risk.breakdown.reachability_factors == REACHABILITY_FACTORS
+    assert "reachability" in risk.breakdown.formula
 
 
 def test_risk_bands():

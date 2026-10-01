@@ -86,6 +86,20 @@ CONFIDENCE_FACTORS = {
     "low": 0.4,
 }
 
+# Reachability: a deterministic, documented heuristic. Findings in code that is
+# plausibly web-exposed (views, routes, handlers, controllers, APIs) weigh
+# more than findings in internal code, because externally reachable flaws are
+# more likely to be exploitable. Path-substring matching only; never a claim
+# about actual data flow.
+REACHABILITY_PATH_HINTS = (
+    "view", "route", "handler", "controller", "api", "endpoint",
+)
+
+REACHABILITY_FACTORS = {
+    "exposed": 1.25,
+    "internal": 1.0,
+}
+
 # Repository-level risk bands over the 0-100 score.
 RISK_BANDS = (
     (75, "critical"),

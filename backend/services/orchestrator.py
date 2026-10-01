@@ -94,7 +94,7 @@ class AnalysisOrchestrator:
         scan = self.scan_files(repo_dir)
         _, failed_parse = self.parse(scan)
         raw_findings = self.analyze_static(scan)
-        validated, _dropped = self.validate_findings(raw_findings, scan)
+        validated, dropped = self.validate_findings(raw_findings, scan)
         risk = self.score_risk(validated)
 
         by_severity: dict[str, int] = {}
@@ -109,8 +109,10 @@ class AnalysisOrchestrator:
             files_skipped=scan.skipped,
             files_failed_parse=failed_parse,
             findings_total=len(validated),
+            findings_dropped=dropped,
             findings_by_severity=by_severity,
             findings_by_category=by_category,
+            skip_reasons=dict(scan.skipped_reasons),
         )
         result = AnalysisResult(
             repository=repository,

@@ -9,12 +9,12 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from app.config import settings
 from models.schemas import AnalysisRequest, AnalysisResult, ErrorResponse
-from services import github_service
+from services import github_service, repository_scanner
 from services.orchestrator import AnalysisOrchestrator
 
 logging.basicConfig(
@@ -47,6 +47,41 @@ async def github_error_handler(request: Request, exc: github_service.GitHubError
         status_code=status_code,
         content=ErrorResponse(
             error={"code": exc.code, "message": str(exc)}
+        ).model_dump(mode="json"),
+    )
+
+
+@app.exception_handler(repository_scanner.RepositoryTooLargeError)
+async def repo_too_large_handler(
+    request: Request, exc: repository_scanner.RepositoryTooLargeError
+) -> JSONResponse:
+    logger.warning("Repository too large for %s: %s", request.url.path, exc)
+    return JSONResponse(
+        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+        content=ErrorResponse(
+            error={"code": exc.code, "message": str(exc)}
+        ).model_dump(mode="json"),
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    # Preserve FastAPI's own HTTP error contract (validation 422s, etc.);
+    # only unexpected failures become structured 500s.
+    if isinstance(exc, HTTPException):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=getattr(exc, "headers", None),
+        )
+    logger.exception("Unhandled error during %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content=ErrorResponse(
+            error={
+                "code": "INTERNAL_ERROR",
+                "message": "An unexpected error occurred while analyzing the repository.",
+            }
         ).model_dump(mode="json"),
     )
 

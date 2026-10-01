@@ -98,13 +98,16 @@ class RiskBreakdown(BaseModel):
 
     formula: str = Field(
         default=(
-            "per_finding_score = severity_weight * confidence_factor; "
+            "per_finding_score = severity_weight * confidence_factor * reachability_factor; "
             "repository_score = min(100, round(sum(per_finding_score) / 10)). "
+            "reachability_factor is 1.25 when the finding's file path suggests "
+            "web-exposed code (views/routes/handlers/controllers/api), else 1.0. "
             "Weights are heuristic and not scientifically validated."
         )
     )
     severity_weights: dict[str, int]
     confidence_factors: dict[str, float]
+    reachability_factors: dict[str, float]
     findings_counted: int
     total_weighted_points: float
 
@@ -121,8 +124,10 @@ class AnalysisSummary(BaseModel):
     files_skipped: int
     files_failed_parse: int
     findings_total: int
+    findings_dropped: int = 0  # findings rejected by the evidence hard gate
     findings_by_severity: dict[str, int]
     findings_by_category: dict[str, int]
+    skip_reasons: dict[str, int] = Field(default_factory=dict)
 
 
 class AnalysisResult(BaseModel):

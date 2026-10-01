@@ -78,51 +78,89 @@ def _looks_secret_name(name: str) -> bool:
 # Security detectors
 # ---------------------------------------------------------------------------
 
+def _secret_target_name(node: ast.AST) -> str | None:
+    """Variable name being assigned, for Assign and AnnAssign nodes."""
+    target: ast.AST | None = None
+    if isinstance(node, ast.Assign):
+        targets = node.targets
+        target = targets[0] if len(targets) == 1 else None
+    elif isinstance(node, ast.AnnAssign):
+        target = node.target
+    if isinstance(target, ast.Name):
+        return target.id
+    return None
+
+
+def _assigned_string_value(node: ast.AST) -> ast.Constant | None:
+    value = node.value if isinstance(node, (ast.Assign, ast.AnnAssign)) else None
+    if isinstance(value, ast.Constant) and isinstance(value.value, str):
+        return value
+    return None
+
+
 def detect_hardcoded_secrets(tree: ast.AST, lines: list[str], path: str) -> list[Finding]:
-    """Assignments like api_key = "sk-live-..." where the name suggests a secret."""
+    """Assignments like api_key = "sk-live-..." where the name suggests a secret.
+
+    Covers both plain (``x = "..."``) and annotated (``x: str = "..."``)
+    assignments; anything else (tuple unpacking, attribute targets) stays silent.
+    """
     findings: list[Finding] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
             continue
-        if not isinstance(node.value, ast.Constant) or not isinstance(node.value.value, str):
+        const = _assigned_string_value(node)
+        if const is None:
             continue
-        value = node.value.value.strip()
+        value = const.value.strip()
         if not value or _is_placeholder(value):
             continue
-        for target in node.targets:
-            if isinstance(target, ast.Name) and _looks_secret_name(target.id):
-                findings.append(
-                    _make_finding(
-                        detector="hardcoded_secret",
-                        category=Category.SECURITY,
-                        severity=Severity.HIGH,
-                        title="Hardcoded secret",
-                        description=(
-                            f"Variable '{target.id}' looks like a credential but is assigned "
-                            "a literal string. Secrets committed to a repository can be "
-                            "extracted by anyone with read access."
-                        ),
-                        relative_path=path,
-                        line=node.lineno,
-                        evidence=_line(lines, node.lineno),
-                        confidence=Confidence.HIGH,
-                        suggested_fix=(
-                            "Load the secret from an environment variable or a secrets "
-                            "manager, and rotate the exposed value."
-                        ),
-                    )
+        name = _secret_target_name(node)
+        if name and _looks_secret_name(name):
+            findings.append(
+                _make_finding(
+                    detector="hardcoded_secret",
+                    category=Category.SECURITY,
+                    severity=Severity.HIGH,
+                    title="Hardcoded secret",
+                    description=(
+                        f"Variable '{name}' looks like a credential but is assigned "
+                        "a literal string. Secrets committed to a repository can be "
+                        "extracted by anyone with read access."
+                    ),
+                    relative_path=path,
+                    line=node.lineno,
+                    evidence=_line(lines, node.lineno),
+                    confidence=Confidence.HIGH,
+                    suggested_fix=(
+                        "Load the secret from an environment variable or a secrets "
+                        "manager, and rotate the exposed value."
+                    ),
                 )
+            )
     return findings
 
 
+def _has_nonconstant_leaf(node: ast.AST) -> bool:
+    """True if any leaf of a BinOp string expression is not a constant."""
+    if isinstance(node, ast.Constant):
+        return False
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Mod)):
+        return _has_nonconstant_leaf(node.left) or _has_nonconstant_leaf(node.right)
+    return True
+
+
 def _is_dynamic_string(node: ast.AST) -> bool:
-    """True for string expressions built from non-constant parts."""
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        return True  # "SELECT ..." + user_input
+    """True for string *construction* with non-constant parts.
+
+    Pure constant expressions (``"a" + "b"``, ``"..." % "x"``) are NOT
+    dynamic: flagging them would be a false positive. A bare variable
+    (``execute(query)``) is not a construction either, so it stays silent
+    here — this detector targets built strings, keeping false positives down.
+    """
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Mod)):
+        return _has_nonconstant_leaf(node)
     if isinstance(node, ast.JoinedStr):
         return any(not isinstance(v, ast.Constant) for v in node.values)
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
-        return True  # "... %s" % value
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
         if node.func.attr == "format":
             return True  # "...".format(value)
@@ -298,24 +336,39 @@ def detect_weak_crypto(tree: ast.AST, lines: list[str], path: str) -> list[Findi
         if not isinstance(node, ast.Call):
             continue
         func = node.func
+        weak_algo: str | None = None
         if isinstance(func, ast.Attribute) and func.attr in {"md5", "sha1"}:
-            findings.append(
-                _make_finding(
-                    detector="weak_crypto",
-                    category=Category.SECURITY,
-                    severity=Severity.MEDIUM,
-                    title="Weak hash function",
-                    description=(
-                        f"hashlib.{func.attr} is cryptographically broken and unsuitable "
-                        "for security purposes such as password hashing or integrity checks."
-                    ),
-                    relative_path=path,
-                    line=node.lineno,
-                    evidence=_line(lines, node.lineno),
-                    confidence=Confidence.HIGH,
-                    suggested_fix="Use hashlib.sha256 or better; use bcrypt/argon2/scrypt for passwords.",
-                )
+            # hashlib.md5(...) / hashlib.sha1(...)
+            weak_algo = func.attr
+        elif (
+            isinstance(func, ast.Attribute)
+            and func.attr == "new"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+            and node.args[0].value.lower() in {"md5", "sha1"}
+        ):
+            # hashlib.new("md5", ...)
+            weak_algo = node.args[0].value.lower()
+        if weak_algo is None:
+            continue
+        findings.append(
+            _make_finding(
+                detector="weak_crypto",
+                category=Category.SECURITY,
+                severity=Severity.MEDIUM,
+                title="Weak hash function",
+                description=(
+                    f"hashlib.{weak_algo} is cryptographically broken and unsuitable "
+                    "for security purposes such as password hashing or integrity checks."
+                ),
+                relative_path=path,
+                line=node.lineno,
+                evidence=_line(lines, node.lineno),
+                confidence=Confidence.HIGH,
+                suggested_fix="Use hashlib.sha256 or better; use bcrypt/argon2/scrypt for passwords.",
             )
+        )
     return findings
 
 

@@ -46,6 +46,28 @@ def test_hardcoded_secrets_detected(fixtures_dir):
     assert all("environ" not in f.evidence for f in secrets)
 
 
+def test_hardcoded_secret_annotated_assignment():
+    # `api_key: str = "..."` is the same flaw as a plain assignment.
+    code = 'api_key: str = "sk-live-abcdef123456"\n'
+    findings = analyze_content("settings.py", code)
+    secrets = [f for f in findings if f.detector == "hardcoded_secret"]
+    assert len(secrets) == 1
+    assert secrets[0].line == 1
+
+
+def test_sql_constant_concatenation_not_flagged():
+    # Pure constant concatenation is not dynamic: no false positive.
+    code = 'cursor.execute("SELECT * FROM t WHERE x = " + "1")\n'
+    findings = analyze_content("q.py", code)
+    assert [f for f in findings if f.detector == "sql_string_construction"] == []
+
+
+def test_sql_percent_format_dynamic_flagged():
+    code = 'cursor.execute("SELECT * FROM t WHERE x = %s" % user_id)\n'
+    findings = analyze_content("q.py", code)
+    assert len([f for f in findings if f.detector == "sql_string_construction"]) == 1
+
+
 def test_xss_detected(fixtures_dir):
     content = (fixtures_dir / "xss_example" / "views.py").read_text()
     findings = analyze_content("views.py", content)
@@ -78,6 +100,14 @@ def test_os_system_and_weak_crypto():
     code = "import os, hashlib\nos.system('ls ' + d)\nh = hashlib.md5(b'x')\n"
     findings = analyze_content("s.py", code)
     assert _detectors_for(findings) == {"os_system", "weak_crypto"}
+
+
+def test_weak_crypto_hashlib_new_form():
+    code = 'import hashlib\nh = hashlib.new("md5")\nh2 = hashlib.new("sha256")\n'
+    findings = analyze_content("s.py", code)
+    weak = [f for f in findings if f.detector == "weak_crypto"]
+    assert len(weak) == 1  # only the md5 call; sha256 is fine
+    assert "md5" in weak[0].evidence
 
 
 def test_long_function_and_bare_except(monkeypatch):

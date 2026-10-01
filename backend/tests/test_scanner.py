@@ -1,6 +1,12 @@
 """Tests for the repository scanner: ignore rules, limits, language detection."""
 
-from services.repository_scanner import detect_language, scan_repository
+import pytest
+
+from services.repository_scanner import (
+    RepositoryTooLargeError,
+    detect_language,
+    scan_repository,
+)
 
 
 def test_mixed_repository_only_main_analyzed(fixtures_dir):
@@ -34,6 +40,37 @@ def test_symlink_not_followed(tmp_path):
     (tmp_path / "link.py").symlink_to(target)
     result = scan_repository(tmp_path)
     assert [f.relative_path for f in result.files] == ["real.py"]
+
+
+def test_file_count_budget_breach_raises(tmp_path, monkeypatch):
+    """Exceeding max_files is a structured error, never a silent partial scan."""
+    from dataclasses import replace
+
+    import services.repository_scanner as scanner_mod
+    from app import config
+
+    monkeypatch.setattr(
+        scanner_mod, "settings", replace(config.settings, max_files=2)
+    )
+    for i in range(4):
+        (tmp_path / f"f{i}.py").write_text("x = 1\n")
+    with pytest.raises(RepositoryTooLargeError) as exc_info:
+        scan_repository(tmp_path)
+    assert exc_info.value.code == "REPOSITORY_TOO_LARGE"
+
+
+def test_payload_budget_breach_raises(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    import services.repository_scanner as scanner_mod
+    from app import config
+
+    monkeypatch.setattr(
+        scanner_mod, "settings", replace(config.settings, max_total_bytes=10)
+    )
+    (tmp_path / "a.py").write_text("x = 1\n" * 100)
+    with pytest.raises(RepositoryTooLargeError):
+        scan_repository(tmp_path)
 
 
 def test_file_size_limit_respected(tmp_path, monkeypatch):
