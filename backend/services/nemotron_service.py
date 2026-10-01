@@ -27,8 +27,9 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from app.config import Settings, settings
-from models.schemas import AIInvestigationResponse, Finding
+from models.schemas import AIInvestigationResponse, Finding, FixProposal
 from services.ai_context_builder import AIContext
+from services.fix_context_builder import FixContext
 from services.ai_errors import (
     AIError,
     AIInvalidResponse,
@@ -40,9 +41,11 @@ from services.ai_errors import (
     AIUpstreamError,
     SAFE_MESSAGES,
 )
-from services.ai_provider import AIInvestigationResult
+from services.ai_provider import AIInvestigationResult, FixProposalResult
 from services.prompts import (
+    CODEAUDIT_REMEDIATION_PROMPT_V1,
     CODEAUDIT_SECURITY_PROMPT_V1,
+    build_fix_messages,
     build_investigation_messages,
 )
 
@@ -85,6 +88,9 @@ class NemotronService:
         self.max_tokens = cfg.ai_max_tokens
         self.timeout_s = cfg.ai_timeout_seconds
         self.max_retries = cfg.ai_max_retries
+        self.fix_temperature = cfg.fix_temperature
+        self.fix_max_tokens = cfg.fix_max_tokens
+        self.fix_max_changes = max(1, cfg.fix_max_changes)
         self._client_factory = client_factory or self._default_client_factory
         self._client: Any | None = None
 
@@ -196,6 +202,61 @@ class NemotronService:
             prompt_version=prompt_version,
         )
 
+    def propose_fix(self, finding: Finding, context: FixContext) -> FixProposalResult:
+        """Ask Nemotron for one structured, minimal remediation proposal.
+
+        Advisory only: the returned proposal still faces the deterministic
+        patch engine (validation), an isolated workspace (application), and
+        the deterministic analyzer (verification) before anything is trusted.
+        """
+        if not self.is_configured:
+            raise AIProviderNotConfigured(
+                "NemotronService is not configured: set NEBIUS_API_KEY and "
+                "NEMOTRON_MODEL to enable AI remediation."
+            )
+        started = time.monotonic()
+        messages = build_fix_messages(finding, context)
+        context_chars = len(messages[1]["content"])
+        prompt_version = CODEAUDIT_REMEDIATION_PROMPT_V1
+
+        try:
+            response = self._get_client().chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=self.fix_temperature,
+                max_tokens=self.fix_max_tokens,
+                response_format={"type": "json_object"},
+            )
+        except Exception as exc:  # noqa: BLE001 - mapped to typed errors
+            raise self._classify_sdk_error(exc) from exc
+
+        text = self._extract_content(response)
+        payload = self._parse_structured_output(text)
+        proposal = self._validate_fix_output(payload, finding.id)
+
+        duration_ms = int((time.monotonic() - started) * 1000)
+        logger.info(
+            "Nemotron fix proposal: model=%s prompt=%s duration_ms=%d "
+            "context_chars=%d decision=%s changes=%d finding=%s",
+            self.model,
+            prompt_version,
+            duration_ms,
+            context_chars,
+            proposal.decision.value,
+            len(proposal.changes),
+            finding.id,
+        )
+        return FixProposalResult(
+            status="enabled",
+            proposal=proposal,
+            model_calls=1,
+            context_chars=context_chars,
+            duration_ms=duration_ms,
+            provider_name=self.name,
+            model=self.model,
+            prompt_version=prompt_version,
+        )
+
     # -- internals ----------------------------------------------------------
 
     @staticmethod
@@ -284,6 +345,71 @@ class NemotronService:
                 raise
             raise AIOutputInvalid(
                 "Model output failed schema validation."
+            ) from exc
+
+    @staticmethod
+    def _normalize_fix_payload(data: dict, max_changes: int) -> dict:
+        """Deterministic normalization BEFORE Pydantic validation of a fix.
+
+        Lowercases the decision string, strips whitespace, normalizes path
+        separators. Rejects path traversal / absolute / empty paths and
+        over-long change lists outright: fail-closed, never silently
+        repaired. File case is preserved (repository paths may be
+        case-sensitive).
+        """
+        normalized = dict(data)
+        if isinstance(normalized.get("decision"), str):
+            normalized["decision"] = normalized["decision"].strip().lower()
+        changes = normalized.get("changes", [])
+        if not isinstance(changes, list):
+            raise AIOutputInvalid("Model output field 'changes' must be a list.")
+        if len(changes) > max_changes:
+            raise AIOutputInvalid(
+                f"Model proposed {len(changes)} changes (limit {max_changes})."
+            )
+        cleaned = []
+        for item in changes:
+            if not isinstance(item, dict):
+                raise AIOutputInvalid(
+                    "Model output field 'changes' must contain objects."
+                )
+            entry = {
+                k: (v.strip() if isinstance(v, str) else v)
+                for k, v in item.items()
+            }
+            if "file" in entry and isinstance(entry["file"], str):
+                path = entry["file"].replace("\\", "/").strip()
+                if (
+                    not path
+                    or path.startswith("/")
+                    or ".." in path.split("/")
+                ):
+                    raise AIOutputInvalid(
+                        "Model output contains an invalid file path."
+                    )
+                entry["file"] = path
+            cleaned.append(entry)
+        normalized["changes"] = cleaned
+        return normalized
+
+    def _validate_fix_output(self, data: dict, finding_id: str) -> FixProposal:
+        from pydantic import ValidationError
+
+        try:
+            normalized = self._normalize_fix_payload(data, self.fix_max_changes)
+            # Traceability is stamped by the system: any model-supplied
+            # finding_id is discarded and replaced with the finding the model
+            # was actually asked about.
+            normalized["finding_id"] = finding_id
+            return FixProposal.model_validate(normalized)
+        except (AIOutputInvalid, ValidationError) as exc:
+            logger.warning(
+                "Nemotron fix output failed validation: %s", type(exc).__name__
+            )
+            if isinstance(exc, AIOutputInvalid):
+                raise
+            raise AIOutputInvalid(
+                "Model fix output failed schema validation."
             ) from exc
 
     @staticmethod
