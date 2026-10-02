@@ -152,6 +152,9 @@ class QualityAgent:
         for parsed in ctx.parsed:
             if parsed.parse_error:
                 continue
+            # Python-AST rules only: other languages have their own analyzers.
+            if parsed.language != "python":
+                continue
             content = ctx.scan.contents.get(parsed.relative_path, "")
             if not content:
                 continue

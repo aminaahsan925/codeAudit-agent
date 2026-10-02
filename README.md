@@ -3,12 +3,13 @@
 Evidence-driven security and code-quality analysis for GitHub repositories.
 Built for the NEBIUS x NVIDIA Global AI Hackathon (Best Apps & Agents track).
 
-**Phase 1 — backend foundation.** A FastAPI backend that clones a public
-GitHub repository, discovers analyzable files, parses Python with the AST,
-runs deterministic static analysis, validates every finding against the real
+**Phase A — multi-language analysis.** A FastAPI backend that clones a public
+GitHub repository, discovers analyzable files, deep-parses Python
+**and** JavaScript/TypeScript with language-specific analyzers, runs
+deterministic static analysis, validates every finding against the real
 source (the evidence hard gate), scores risk with a transparent formula, and
-returns structured JSON. No AI calls in Phase 1 — the Nemotron integration
-lands in Phase 2 behind a provider interface.
+returns structured JSON. Nemotron reasoning plugs in behind the provider
+interface with a hard per-mode AI budget.
 
 > The risk formula is a documented heuristic, not a scientifically validated
 > measure. No accuracy or benchmark claims are made.
@@ -211,10 +212,10 @@ Every discovered file lands in exactly one terminal bucket:
 |---|---|
 | `files_discovered` | Every file entry the walk encountered (directories excluded) |
 | `files_scanned` | Passed exclusion filters; read and content-sniffed |
-| `files_deep_analyzed` | Python files successfully parsed **and** run through the detectors |
-| `files_unsupported` | Scanned but not deep-analyzable (non-Python / unknown language) |
+| `files_deep_analyzed` | Files in deeply analyzed languages (Python, JavaScript/TypeScript) successfully parsed **and** run through the detectors |
+| `files_unsupported` | Scanned but not deep-analyzable (recognized language without a registered analyzer, or unknown language) |
 | `files_skipped` | Excluded by ignore rules, size/count/payload limits, or unreadable — see `skip_reasons` |
-| `files_failed_parse` | Python files whose AST parse failed |
+| `files_failed_parse` | Files whose parser reported a structural parse failure |
 
 Reconciliation invariant (enforced by the API schema itself):
 
@@ -258,14 +259,18 @@ GitHubService.fetch_repo — shallow clone (--depth 1) into a temp dir,
 RepositoryScanner.scan_files — ignore rules (.git, node_modules, venv, …),
       binary/empty/oversize skip, symlink refusal, size/count/payload limits
       ↓
-CodeParser.parse — Python AST → functions/classes/imports;
-      one broken file cannot abort the analysis
-      ↓
-StaticAnalyzer.analyze_static — 10 deterministic detectors (Python only),
-      every finding carries the exact source line as evidence:
-      hardcoded_secret, sql_string_construction, unsafe_html_render,
-      dangerous_eval, dangerous_exec, subprocess_shell_true, os_system,
-      weak_crypto, long_function, bare_except
+Language analyzers (services/languages/) — one plugin per deeply analyzed
+      language, routed by the registry; each parses to symbols and runs its
+      own deterministic detectors, every finding carrying the exact source
+      line as evidence:
+      · Python (AST): hardcoded_secret, sql_string_construction,
+        unsafe_html_render, dangerous_eval, dangerous_exec,
+        subprocess_shell_true, os_system, weak_crypto, long_function,
+        bare_except
+      · JavaScript/TypeScript (tree-sitter): js_dangerous_eval,
+        js_function_constructor, js_command_injection, js_xss_dom_sink,
+        js_react_dangerous_html, js_hardcoded_secret,
+        js_sql_string_construction, js_weak_crypto, js_implied_eval
       ↓
 FindingValidator.validate_findings — HARD GATE: file must exist, line must
       exist, evidence must match the cited line; failures are dropped
@@ -313,8 +318,12 @@ codeaudit-agent/
 │   │   ├── orchestrator.py       # pipeline + agent-with-tools boundary
 │   │   ├── github_service.py     # URL validation, shallow clone, metadata
 │   │   ├── repository_scanner.py # safe file discovery, language detection
+│   │   ├── languages/            # per-language analyzer plugins + registry
+│   │   │   ├── python_analyzer.py      # adapter: code_parser + static_analyzer
+│   │   │   ├── javascript_analyzer.py  # tree-sitter JS/TS, 9 detectors
+│   │   │   └── registry.py             # single source of truth for deep analysis
 │   │   ├── code_parser.py        # Python AST parsing, per-file error capture
-│   │   ├── static_analyzer.py    # 10 deterministic detectors
+│   │   ├── static_analyzer.py    # 10 deterministic Python detectors
 │   │   ├── finding_validator.py  # evidence hard gate
 │   │   ├── risk_engine.py        # transparent risk formula
 │   │   ├── ai_provider.py        # provider-agnostic AI interface + test stub
@@ -611,9 +620,25 @@ remaining); every `RemediationResult` carries `agent_trail`.
   and analyzed under strict size/time limits.
 - **Honest scoring:** the risk formula is shown in every response.
 
+## Language support
+
+CodeAudit analyzes **Python** and **JavaScript/TypeScript** repositories
+deeply, and provides extensible multi-language security scanning: each
+language gets its own parser and detector set behind a plugin registry
+(`services/languages/`), so new languages add one analyzer class instead of
+bolting regexes onto a shared scanner.
+
+Java, C/C++, Go, Rust, Ruby, and PHP are recognized by extension but are
+**not** yet deeply analyzed — they land in the `unsupported` bucket until
+their analyzers exist.
+
+Roadmap: more language analyzers first, then dependency scanning, then
+infrastructure/config checks (Dockerfile, YAML, Terraform, GitHub Actions).
+
 ## Limitations
 
-- Deep analysis is Python-only; other languages are detected but not parsed.
+- Deep analysis covers Python and JavaScript/TypeScript; other recognized
+  languages are detected but not parsed.
 - 10 deterministic detectors plus the specialists' conservative AST rules;
   Nemotron adds reasoning but no new detector families yet.
 - AI enrichment is hard-capped per mode (free 0, economy 1, full 4 per
