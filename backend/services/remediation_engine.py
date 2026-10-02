@@ -50,7 +50,7 @@ from services.ai_errors import (
 )
 from services.ai_provider import AIProvider, StubAIProvider
 from services.fix_context_builder import build_fix_context
-from services.nemotron_service import NemotronService
+from services.provider_factory import build_ai_provider
 from services.orchestrator import AnalysisOrchestrator
 from services.remediation_errors import (
     RemediationFindingNotFound,
@@ -98,7 +98,8 @@ class RemediationEngine:
         fix_agent=None,
         verification_agent=None,
     ) -> None:
-        # None means "auto": real NemotronService when configured, else None
+        # None means "auto": configured AI provider (Nebius default,
+        # Groq opt-in) when available, else None
         # (every AI call then degrades to "unavailable" gracefully).
         if ai_provider is None:
             ai_provider = self._default_ai_provider()
@@ -119,16 +120,9 @@ class RemediationEngine:
 
     @staticmethod
     def _default_ai_provider() -> AIProvider | None:
-        if not settings.ai_enabled:
-            logger.info("AI remediation disabled by CODEAUDIT_AI_ENABLED=false")
-            return None
-        service = NemotronService()
-        if not service.is_configured:
-            logger.info(
-                "AI remediation disabled: NEBIUS_API_KEY/NEMOTRON_MODEL not set"
-            )
-            return None
-        return service
+        # Auto: configured provider (Nebius default, Groq opt-in). None
+        # means the AI proposal step degrades to "unavailable" gracefully.
+        return build_ai_provider()
 
     def _ai_outcome(
         self, status: RemediationStatus, code: str, finding_id: str, risk_before
