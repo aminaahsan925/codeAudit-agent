@@ -102,6 +102,10 @@ class Finding(BaseModel):
     confidence: Confidence
     source: FindingSource
     detector: str = Field(..., description="Name of the detector that produced this finding")
+    language: Optional[str] = Field(
+        default=None,
+        description="Language the finding was detected in, e.g. 'python' or 'javascript'",
+    )
     # AI traceability (Phase 2). Set only when Nemotron reasoned over this
     # finding. The deterministic fields above (id/file/line/evidence/detector)
     # are never rewritten by AI enrichment — they remain the evidence anchor.
