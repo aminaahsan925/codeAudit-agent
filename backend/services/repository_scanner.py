@@ -14,7 +14,6 @@ from pathlib import Path
 from app.config import settings
 from models.schemas import AnalyzedFile
 from utils.constants import (
-    DEEP_ANALYSIS_LANGUAGES,
     IGNORED_DIRS,
     IGNORED_EXTENSIONS,
     LANGUAGE_BY_EXTENSION,
@@ -130,5 +129,11 @@ def scan_repository(root: Path) -> ScanResult:
 
 
 def supports_deep_analysis(language: str | None) -> bool:
-    """Whether Phase 1 performs AST-level parsing for this language."""
-    return language in DEEP_ANALYSIS_LANGUAGES
+    """Whether deep (AST) analysis is available for this language.
+
+    Delegates to the language analyzer registry, which is built from
+    DEEP_ANALYSIS_LANGUAGES — one source of truth, no drift.
+    """
+    from services.languages.registry import get_analyzer
+
+    return get_analyzer(language) is not None

@@ -33,7 +33,6 @@ from services import (
     github_service,
     repository_scanner,
     risk_engine,
-    static_analyzer,
 )
 from services.ai_context_builder import build_ai_context
 from services.ai_errors import (
@@ -44,7 +43,8 @@ from services.ai_errors import (
 )
 from services.ai_provider import AIProvider
 from services.ai_result_processor import merge_ai_results
-from services.code_parser import parse_file
+from services.languages.base import ParsedSource
+from services.languages.registry import get_analyzer
 from services.provider_factory import build_ai_provider
 from services.repository_scanner import ScanResult, supports_deep_analysis
 
@@ -92,12 +92,20 @@ class AnalysisOrchestrator:
         parsed: list[ParsedFile] = []
         failed = 0
         for analyzed in scan.files:
-            if not supports_deep_analysis(analyzed.language):
+            # Per-language routing through the analyzer registry. Python
+            # behavior is unchanged: the Python analyzer delegates to the
+            # same code_parser / static_analyzer modules as before.
+            analyzer = get_analyzer(analyzed.language)
+            if analyzer is None:
                 continue
             content = scan.contents.get(analyzed.relative_path, "")
-            result = parse_file(analyzed.relative_path, analyzed.language, content)
-            if result is None:
-                continue
+            source: ParsedSource = analyzer.parse_source(content, analyzed.relative_path)
+            result = ParsedFile(
+                relative_path=source.relative_path,
+                language=source.language,
+                symbols=source.symbols,
+                parse_error=source.parse_error,
+            )
             if result.parse_error:
                 failed += 1
             parsed.append(result)
@@ -106,10 +114,11 @@ class AnalysisOrchestrator:
     def analyze_static(self, scan: ScanResult) -> list[Finding]:
         findings: list[Finding] = []
         for analyzed in scan.files:
-            if not supports_deep_analysis(analyzed.language):
+            analyzer = get_analyzer(analyzed.language)
+            if analyzer is None:
                 continue
             content = scan.contents.get(analyzed.relative_path, "")
-            findings.extend(static_analyzer.analyze_content(analyzed.relative_path, content))
+            findings.extend(analyzer.analyze_file(analyzed.relative_path, content))
         findings.sort(key=lambda f: (f.file, f.line, f.detector))
         return findings
 

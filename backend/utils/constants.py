@@ -49,8 +49,9 @@ IGNORED_EXTENSIONS = frozenset(
     }
 )
 
-# Extension -> language. Phase 1 performs deep analysis for Python only;
-# other languages are recognized so future parsers can plug in.
+# Extension -> language. Deep analysis is available for the languages in
+# DEEP_ANALYSIS_LANGUAGES; other languages are recognized so future parsers
+# can plug in via the language analyzer registry.
 LANGUAGE_BY_EXTENSION = {
     ".py": "python",
     ".js": "javascript",
@@ -68,8 +69,10 @@ LANGUAGE_BY_EXTENSION = {
     ".php": "php",
 }
 
-# Only these languages get deep (AST) parsing in Phase 1.
-DEEP_ANALYSIS_LANGUAGES = frozenset({"python"})
+# Languages with deep (AST) analysis. This is the declarative source of
+# truth; services/languages/registry.py builds the analyzer registry from
+# it, so the set and the available analyzers cannot drift apart.
+DEEP_ANALYSIS_LANGUAGES = frozenset({"python", "javascript", "typescript"})
 
 # --- Risk engine: transparent, auditable weights (heuristic, not validated) ---
 SEVERITY_WEIGHTS = {

@@ -13,9 +13,9 @@ from services.orchestrator import AnalysisOrchestrator
 
 def _build_mixed_tree(root):
     """One file per bucket, plus skips of different reasons."""
-    (root / "good.py").write_text("x = 1\n")  # deep-analyzed
+    (root / "good.py").write_text("x = 1\n")  # deep-analyzed (python)
     (root / "broken.py").write_text("def broken(:\n")  # failed parse
-    (root / "app.js").write_text("var x = 1;\n")  # unsupported language
+    (root / "app.js").write_text("var x = 1;\n")  # deep-analyzed (javascript)
     (root / "mystery.xyz").write_text("???\n")  # unsupported (unknown ext)
     (root / "node_modules").mkdir()
     (root / "node_modules" / "dep.js").write_text("var d = 1;\n")  # skipped: ignored_dir
@@ -27,8 +27,8 @@ def _valid_summary_kwargs(**overrides):
     base = dict(
         files_discovered=8,
         files_scanned=4,
-        files_deep_analyzed=1,
-        files_unsupported=2,
+        files_deep_analyzed=2,
+        files_unsupported=1,
         files_skipped=4,
         files_failed_parse=1,
         findings_total=0,
@@ -46,8 +46,8 @@ def test_mixed_tree_buckets_and_invariant(tmp_path):
 
     assert s.files_discovered == 7
     assert s.files_scanned == 4  # good.py, broken.py, app.js, mystery.xyz
-    assert s.files_deep_analyzed == 1  # good.py
-    assert s.files_unsupported == 2  # app.js, mystery.xyz
+    assert s.files_deep_analyzed == 2  # good.py, app.js
+    assert s.files_unsupported == 1  # mystery.xyz
     assert s.files_failed_parse == 1  # broken.py
     assert s.files_skipped == 3  # node_modules/dep.js, empty.py, logo.png
 
@@ -80,13 +80,13 @@ def test_single_unsupported_file_lands_in_unsupported_bucket(tmp_path):
 
 
 def test_summary_rejects_inconsistent_accounting():
-    # discovered (8) != deep (1) + unsupported (2) + skipped (4) + failed (0) = 7
+    # discovered (8) != deep (2) + unsupported (1) + skipped (4) + failed (0) = 7
     with pytest.raises(ValidationError):
         AnalysisSummary(**_valid_summary_kwargs(files_failed_parse=0))
 
 
 def test_summary_rejects_inconsistent_scanned_count():
-    # scanned (5) != deep (1) + unsupported (2) + failed (1) = 4
+    # scanned (5) != deep (2) + unsupported (1) + failed (1) = 4
     with pytest.raises(ValidationError):
         AnalysisSummary(**_valid_summary_kwargs(files_scanned=5))
 
