@@ -77,6 +77,13 @@ Only the AI variables matter in Phase 2; everything else has safe defaults.
 | `CODEAUDIT_MAX_TOTAL_BYTES` | Max total analyzed payload (bytes) | `50000000` |
 | `CODEAUDIT_CLONE_TIMEOUT` | `git clone` timeout (seconds) | `120` |
 | `CODEAUDIT_MAX_FUNCTION_LINES` | `long_function` detector threshold | `50` |
+| `CODEAUDIT_ADVISORY_DB` | Path to the local advisory DB for dependency matching (Phase 4) | `backend/data/advisories.json` |
+| `CODEAUDIT_ADVISORY_MAX_AGE_DAYS` | Max DB age before it counts as stale (Phase 4) | `30` |
+| `CODEAUDIT_DATABASE_URL` | SQLAlchemy DB URL (Phase 7); SQLite file is created `0600` | `sqlite:///./codeaudit.db` |
+| `CODEAUDIT_REQUIRE_AUTH` | Require API-key auth on all endpoints (Phase 7) | `false` |
+| `CODEAUDIT_DEV_BOOTSTRAP_KEY` | Print a dev API key on first run (Phase 7; loud warning) | `false` |
+| `CODEAUDIT_WEBHOOK_URL` | Signed JSON webhook on completed runs (Phase 8; empty = disabled) | — |
+| `CODEAUDIT_WEBHOOK_SECRET` | HMAC secret for webhook signatures (Phase 8) | — |
 | `CODEAUDIT_LOG_LEVEL` | Logging level | `INFO` |
 
 ## API
@@ -204,6 +211,41 @@ Request:
 
 Response: a JSON array of remediation results, one per finding.
 
+### `POST /scan/website`
+Authorized live security scan of a website — a **separate capability**
+from repository analysis (it makes outbound HTTP requests).
+
+Authorization (both required, else 403 before any network I/O):
+```json
+{
+  "target_url": "https://example.com/",
+  "authorization_token": "the-token-configured-for-example.com",
+  "i_authorize_this_scan": true,
+  "include_subdomains": false,
+  "active_probes": true
+}
+```
+- `CODEAUDIT_SCAN_TOKENS="example.com:token,..."` configures per-host
+  tokens server-side (compared with `hmac.compare_digest`, never
+  logged). Empty = every scan refused.
+- **Legal warning:** only scan systems you own or are explicitly
+  permitted to test. Unauthorized scanning may be illegal.
+
+Safety (see `docs/SECURITY_MODEL.md` for the full model):
+- **SSRF guard** on every request and redirect hop: private, loopback,
+  link-local (incl. `169.254.169.254`), multicast, reserved ranges
+  refused; localhost only with `CODEAUDIT_SCAN_ALLOW_LOCALHOST=true`.
+- **Scope enforcement:** crawl stays on the authorized host + path
+  prefix (opt-in subdomains); out-of-scope URLs are skipped, never
+  fetched.
+- **Bounded active probes:** GET-only reflected-XSS canary and SQL-error
+  probes, rate-limited; findings capped at MEDIUM with a
+  manual-verification note. No data is ever extracted.
+
+Response: `urls_scanned`, `findings` (each with `source: "live-scan"`,
+`rule_id` like `LIVE-007`, CWE), `checks_run`, `requests_made`, and a
+`disclaimer` — a limited scan never claims the site is secure.
+
 ### File accounting
 
 Every discovered file lands in exactly one terminal bucket:
@@ -212,8 +254,8 @@ Every discovered file lands in exactly one terminal bucket:
 |---|---|
 | `files_discovered` | Every file entry the walk encountered (directories excluded) |
 | `files_scanned` | Passed exclusion filters; read and content-sniffed |
-| `files_deep_analyzed` | Files in deeply analyzed languages (Python, JavaScript/TypeScript) successfully parsed **and** run through the detectors |
-| `files_unsupported` | Scanned but not deep-analyzable (recognized language without a registered analyzer, or unknown language) |
+| `files_deep_analyzed` | Files in deeply analyzed languages (Python, JavaScript/TypeScript) successfully parsed **and** run through the detectors, **plus** files covered by a structural supply-chain analyzer (manifests, Dockerfiles, workflows, compose files) |
+| `files_unsupported` | Scanned but not deep-analyzable and not supply-chain-covered (recognized language without a registered analyzer, or unknown language) |
 | `files_skipped` | Excluded by ignore rules, size/count/payload limits, or unreadable — see `skip_reasons` |
 | `files_failed_parse` | Files whose parser reported a structural parse failure |
 
@@ -332,17 +374,29 @@ codeaudit-agent/
 │   │   ├── ai_result_processor.py# assessment application + dedup (pure)
 │   │   ├── nemotron_service.py   # real Nemotron via Token Factory (Phase 2)
 │   │   ├── prompts/              # versioned prompts (codeaudit-security-v1)
-│   │   └── report_generator.py   # markdown/dict rendering
-│   ├── scripts/
-│   │   ├── check_token_factory.py# /v1/models diagnostic (manual)
-│   │   └── smoke_nemotron.py     # tiny live smoke test (manual, not in CI)
+│   │   │   └── report_generator.py   # markdown/dict rendering
+│   │   ├── supplychain/        # Phase 4: dependency/secret/config scanning
+│   │   │   ├── manifests.py          # 7 manifest format parsers (never exec)
+│   │   │   ├── advisories.py         # AdvisorySource + LocalAdvisoryDB
+│   │   │   ├── dependencies.py       # DEP-001…004
+│   │   │   ├── secrets.py            # SECRET-001…006 (redacted, sensitive)
+│   │   │   ├── redaction.py          # sk-live-****c123 redaction helpers
+│   │   │   ├── config.py             # Dockerfile / GHA / compose (CFG-*)
+│   │   │   ├── sbom.py               # CycloneDX-inspired SBOM builder
+│   │   │   └── dispatch.py           # file-kind routing + accounting
+│   │   ├── data/
+│   │   │   └── advisories.example.json  # advisory DB schema (copy to advisories.json)
+│   │   ├── scripts/
+│   │   │   ├── check_token_factory.py# /v1/models diagnostic (manual)
+│   │   │   ├── refresh_advisories.py # populate advisory DB from OSV.dev (manual)
+│   │   │   └── smoke_nemotron.py     # tiny live smoke test (manual, not in CI)
 │   ├── utils/
 │   │   ├── constants.py     # ignore rules, limits, risk weights
 │   │   └── file_utils.py    # binary detection, safe reading
 │   ├── tests/
 │   │   ├── fixtures/        # planted SQLi / secret / XSS / eval / invalid / mixed repos
 │   │   ├── fakes.py         # FakeAIProvider + fake OpenAI client (tests only)
-│   │   └── test_*.py        # 144 hermetic tests (no network)
+│   │   └── test_*.py        # 386 hermetic tests (no network)
 │   ├── requirements.txt / requirements-dev.txt
 │   └── .env.example
 ├── README.md
@@ -606,6 +660,186 @@ Every `AnalysisResult` now carries `agents` (per-agent status, timings,
 model calls, prompt versions) and `ai_budget` (mode, limit, used,
 remaining); every `RemediationResult` carries `agent_trail`.
 
+## Phase 4 — Supply-chain scanning (dependencies, secrets, config)
+
+A third deterministic stage (`backend/services/supplychain/`) runs after
+the language analyzers on every scanned file. Findings flow through the
+same validation → risk → fusion → AI pipeline, with two hard guarantees:
+
+- **Secrets never reach AI.** Every secret finding carries redacted
+  evidence (`sk-live-****c123`, never the raw value) and `sensitive=true`;
+  the AI context builder excludes sensitive findings *and their files*
+  from all context stages, and fix windows are redacted too.
+- **No fabricated vulnerabilities.** Dependency findings match only
+  against a local advisory database you control; a package with no
+  advisory entry is never reported as vulnerable.
+
+**Dependencies** — parses `requirements.txt`, `setup.py` (AST, never
+executed), `pyproject.toml`, `Pipfile`/`Pipfile.lock`, `package.json`,
+`package-lock.json`. DEP-001 fires only on a concrete-version advisory
+match; DEP-002 flags fully unpinned declarations; DEP-003 (INFO) reports
+a stale/missing advisory DB; DEP-004 reports manifest parse errors.
+
+**Advisory database** — `backend/data/advisories.json` (JSON, schema in
+`backend/data/advisories.example.json`). Populate it from OSV.dev:
+
+```powershell
+cd backend
+..\.venv\Scripts\python.exe scripts\refresh_advisories.py
+```
+
+(`refresh_advisories.py` is manual and network-dependent — never part of
+tests or analysis.) Without a populated DB every dependency finding
+carries `database_status: unavailable` and no vulnerability is reported.
+Set `CODEAUDIT_ADVISORY_DB` to use a different path,
+`CODEAUDIT_ADVISORY_MAX_AGE_DAYS` (default 30) for staleness.
+
+**Secrets** — PEM keys, AWS (`AKIA…`), GitHub tokens, Google API keys,
+Stripe keys, and high-entropy strings assigned to secret-like names.
+The Python/JS hardcoded-secret rules now redact evidence, mark findings
+sensitive, and defer token-shaped values to these detectors (no
+double-reporting).
+
+**Config** — Dockerfile (no `USER`, `:latest` tag, secrets in `ENV`/`ARG`,
+`ADD` vs `COPY`, curl-pipe-shell), GitHub Actions (`permissions:
+write-all`, `pull_request_target` + checkout, unpinned action refs), and
+compose files (`privileged`, secrets in `environment:`). Line-based
+checks, documented per rule as a first net rather than a proof.
+
+**SBOM** — every `AnalysisResult` carries `sbom`: a CycloneDX-inspired
+inventory (name, version, type, scope) with the advisory DB status
+recorded and an explicit note that it is not full spec compliance and
+the transitive closure is not resolved.
+
+## Phase 6 — Authorized live website scanning
+
+`POST /scan/website` (`backend/services/livescan/`) tests a deployed
+site: bounded crawl, passive checks, and minimal GET-only active
+probes. Findings share the Finding contract with `source: "live-scan"`,
+`rule_id` (`LIVE-001`…`LIVE-021`), and CWE mappings.
+
+**Guards are built before the scanner** (full model in
+`docs/SECURITY_MODEL.md`):
+- **Authorization:** per-host token (`CODEAUDIT_SCAN_TOKENS`) compared
+  with `hmac.compare_digest` **plus** `"i_authorize_this_scan": true`
+  per request — else 403 before any network I/O. No default-allow.
+- **SSRF guard:** resolve-then-check on every request and redirect hop;
+  refuses private/loopback/link-local/multicast/reserved ranges and
+  non-HTTP(S) schemes; defeats decimal/octal/hex IP spellings;
+  localhost only via explicit opt-in. Residual DNS-TOCTOU risk is
+  documented, not hidden.
+- **Scope:** exact host + port + path prefix (opt-in subdomains);
+  out-of-scope links and redirect targets are never fetched.
+- **Active probes:** reflected-XSS canary and SQL-error probes only —
+  GET-only, rate-limited, non-destructive, findings capped at MEDIUM
+  with "requires manual verification"; no data extraction, ever.
+- **Credentials** (tokens, cookies, auth headers) are never logged,
+  stored, or echoed.
+
+**Checks:** transport (LIVE-007), security headers (LIVE-001…005),
+cookie flags (LIVE-006, values never recorded), server banners
+(LIVE-008), exposed `/.git/HEAD` + `/.env` (LIVE-009, HIGH),
+TLS certificate inspection (LIVE-010), reflected-XSS probe (LIVE-020),
+SQL-error probe (LIVE-021).
+
+**Honesty:** every result carries a disclaimer — N URLs, M passive
+checks, K active probes; absence of findings is not proof of security.
+Probe findings are observations, not confirmed exploits. Static
+findings never claim deployed exploitability.
+
+**Legal warning:** only scan systems you own or have explicit written
+permission to test. Unauthorized security testing may be illegal.
+
+## Phase 7 — Persistence, API keys & jobs
+
+`backend/services/persistence/` (SQLAlchemy 2.0.44) adds durable state:
+users, API keys, projects, repo analyses, website scans, immutable
+finding snapshots, scan jobs, and usage counters.
+
+- **Auth:** API keys only (`Authorization: Bearer …`). Keys are issued
+  once and stored as salted hashes; scopes `read` ⊂ `scan` ⊂ `admin`
+  are enforced per endpoint. `CODEAUDIT_REQUIRE_AUTH` (default `false`
+  for the local demo) switches the API to 401-without-key. Any network
+  deployment must enable it.
+- **Tenant isolation:** every query is scoped project→user in the
+  repository layer; cross-user access returns 404. Tested at both
+  repository and API layers.
+- **Jobs:** `?async=true` on `/analyze` and `/scan/website` returns
+  202 + job id; `GET /jobs/{id}` polls, `DELETE /jobs/{id}` cancels.
+  The worker thread is dev-only and marked as such; production needs a
+  separate worker process.
+- **History:** `GET /projects/{id}/scans` lists both scan kinds;
+  `GET /analyses/{id}` and `GET /website-scans/{id}` return finding
+  snapshots. Live-scan credentials for async jobs stay in memory only.
+- **Database:** SQLite by default (`CODEAUDIT_DATABASE_URL`,
+  file created `0600`); the schema is Postgres-compatible and
+  versioned (`upgrade_database()`), Postgres is the production target.
+- **Metering:** per-key counters for analyses, scans, and AI calls —
+  the data billing will need later. No billing yet.
+
+## Phase 8 — Lifecycle, retest, reports & webhooks
+
+- **Finding lifecycle:** `POST/GET /projects/{id}/findings/status`
+  marks findings `acknowledged` / `fixed` (no row = new), keyed by a
+  stable fingerprint (rule + file + evidence; line shifts don't break
+  it). Tenant-scoped.
+- **Retest:** `POST /projects/{id}/retest` re-runs the latest
+  analysis/scan and diffs findings into new / persisting / resolved,
+  with risk delta. Previously-fixed findings that persist are flagged
+  `regressed`; fixed + gone are `verified`. Website retests need fresh
+  authorization every time.
+- **Reports:** `GET /analyses/{id}/report` and
+  `GET /website-scans/{id}/report` export Markdown or self-contained
+  HTML (`?format=html`), escaped and disclaimer-carrying.
+- **Webhooks:** `CODEAUDIT_WEBHOOK_URL` receives an HMAC-signed JSON
+  POST on every completed run (`X-CodeAudit-Signature`). Best-effort,
+  never fails the request.
+
+## Phase 9 — Demo frontend & customer workflow
+
+A static, no-build-step web UI in `frontend/` (three files: `index.html`,
+`styles.css`, `app.js` — no npm, no bundler). It is the customer-facing
+path through the whole product:
+
+- **Analyze repo** — repo URL → `POST /analyze`, optional background-job
+  mode (`?async=true`) with live polling of `GET /jobs/{id}`; renders
+  the risk score, expandable finding cards with evidence blocks, and AI
+  status.
+- **Scan website** — target URL + per-host token + mandatory
+  "I authorize this scan" checkbox (the API 403s without both);
+  optional session cookie for authenticated scans.
+- **Findings** — per-project lifecycle: pick a project, see the latest
+  run's findings with their `acknowledged` / `fixed` status, and set
+  statuses (fingerprint-aware buttons hit
+  `POST /projects/{id}/findings/status`).
+- **Retest** — `POST /projects/{id}/retest`: new / persisting / resolved
+  buckets with `verified` / `regressed` annotations.
+
+Both the analyze and scan forms can attach the run to a project
+(`project_id`), which is what makes the lifecycle/history/retest
+workflow work end to end. Two small backend endpoints were added for
+the UI: `GET /analyses/{id}/findings` and
+`GET /website-scans/{id}/findings`, each returning
+`{fingerprint, finding}` pairs.
+
+Security notes: every dynamic string is HTML-escaped before rendering
+(findings carry code evidence); the scan token is never persisted to
+`localStorage`; the UI repeats the honesty rules (evidence-grounded
+observations, not confirmed exploits; absence of findings is not proof
+of security).
+
+Serve it with any static host (see `frontend/README.md` for deploy
+options), or preview locally:
+
+```bash
+cd frontend && python -m http.server 8080
+# open http://localhost:8080, set Backend to your API URL
+```
+
+For a real deployment (Docker, Render/Railway/Fly, env vars, first API
+key): see `docs/DEPLOYMENT.md`. For the pre-launch checklist:
+`docs/PRODUCTION.md`.
+
 ## Design principles
 
 - **Evidence first:** a finding without verifiable file + line + matching
@@ -632,15 +866,21 @@ Java, C/C++, Go, Rust, Ruby, and PHP are recognized by extension but are
 **not** yet deeply analyzed — they land in the `unsupported` bucket until
 their analyzers exist.
 
-Roadmap: more language analyzers first, then dependency scanning, then
-infrastructure/config checks (Dockerfile, YAML, Terraform, GitHub Actions).
+Roadmap: more language analyzers next. Dependency, secret, and config
+scanning shipped in Phase 4; authorized live website scanning shipped
+in Phase 6 (`POST /scan/website`); persistence, API-key auth, and jobs
+shipped in Phase 7.
 
 ## Limitations
 
 - Deep analysis covers Python and JavaScript/TypeScript; other recognized
   languages are detected but not parsed.
-- 10 deterministic detectors plus the specialists' conservative AST rules;
-  Nemotron adds reasoning but no new detector families yet.
+- 10 deterministic Python detectors, 9 JS/TS detectors, 20 supply-chain
+  rules; Nemotron adds reasoning but no new detector families yet.
+- Dependency vulnerability matching requires a populated advisory DB
+  (`backend/data/advisories.json`); without it, no CVE is ever reported.
+- Config checks (Dockerfile, GHA, compose) are line-based: a first net,
+  not a proof of absence — see each rule's known limitations.
 - AI enrichment is hard-capped per mode (free 0, economy 1, full 4 per
   analysis); no per-finding agent fan-out.
 - No PDF reports, no frontend, Docker, CI/CD, auth, or database — intentionally
