@@ -1,0 +1,916 @@
+{
+  "description": "Curated remediation knowledge for CodeAudit findings. Hand-written guidance, NOT a vulnerability database: it never determines whether a finding exists — detectors and the evidence validator do that. Entries enrich AI explanations and fix proposals only, and every use must be cited by entry id.",
+  "entries": [
+    {
+      "body": "A credential committed to source is compromised the moment the repository is shared. Remove the literal and read it from an environment variable (os.environ / os.getenv) or a secrets manager (e.g. AWS Secrets Manager, HashiCorp Vault). ROTATE the exposed value immediately — deleting it from the file does not un-expose it. Add the pattern to .gitignore-adjacent secret scanning (e.g. gitleaks) in CI.",
+      "cwe_ids": [
+        "CWE-798"
+      ],
+      "id": "KB-PY-SEC-001",
+      "languages": [
+        "python"
+      ],
+      "rule_ids": [
+        "PY-SEC-001"
+      ],
+      "source": "curated",
+      "title": "Hardcoded secret in Python source (CWE-798)",
+      "version": "kb-v1"
+    },
+    {
+      "body": "Never interpolate values into SQL text. Use parameterized queries: cursor.execute(\"SELECT * FROM users WHERE id = %s\", (user_id,)) for psycopg2/MySQLdb (? placeholders for sqlite3). The DB driver separates code from data, which is what defeats injection. String formatting, f-strings, and concatenation are unsafe even with ad-hoc escaping. See OWASP SQL Injection Prevention Cheat Sheet.",
+      "cwe_ids": [
+        "CWE-89"
+      ],
+      "id": "KB-PY-SEC-002",
+      "languages": [
+        "python"
+      ],
+      "rule_ids": [
+        "PY-SEC-002"
+      ],
+      "source": "curated",
+      "title": "SQL string construction in Python (CWE-89)",
+      "version": "kb-v1"
+    },
+    {
+      "body": "mark_safe() and render_template_string() with dynamic content bypass template autoescaping and enable XSS. Prefer render_template() with normal templates (autoescaping on) and pass data as context variables. If HTML must be built dynamically, sanitize with a whitelist sanitizer (e.g. bleach with explicit allowed tags) and never mark untrusted input safe. Encode output for its context (HTML, attribute, JS) per the OWASP XSS Prevention Cheat Sheet.",
+      "cwe_ids": [
+        "CWE-79"
+      ],
+      "id": "KB-PY-SEC-003",
+      "languages": [
+        "python"
+      ],
+      "rule_ids": [
+        "PY-SEC-003"
+      ],
+      "source": "curated",
+      "title": "Unsafe HTML rendering in Python (CWE-79)",
+      "version": "kb-v1"
+    },
+    {
+      "body": "eval() on dynamic input is arbitrary code execution. For literal data use ast.literal_eval(). For dispatching behavior, use an explicit dict mapping names to functions. For expression evaluation from users, use a sandboxed expression library (e.g. simpleeval) — never eval/exec. If the input is genuinely trusted and static, document why; otherwise remove the call.",
+      "cwe_ids": [
+        "CWE-95"
+      ],
+      "id": "KB-PY-SEC-004",
+      "languages": [
+        "python"
+      ],
+      "rule_ids": [
+        "PY-SEC-004"
+      ],
+      "source": "curated",
+      "title": "Dangerous eval() in Python (CWE-95)",
+      "version": "kb-v1"
+    },
+    {
+      "body": "exec() executes arbitrary statements — strictly more dangerous than eval(). Replace with the same alternatives: ast.literal_eval() for data, dispatch dicts for behavior, importlib for dynamic imports of known-safe module names (validated against an allowlist). There is almost no legitimate use of exec() on dynamic input.",
+      "cwe_ids": [
+        "CWE-95"
+      ],
+      "id": "KB-PY-SEC-005",
+      "languages": [
+        "python"
+      ],
+      "rule_ids": [
+        "PY-SEC-005"
+      ],
+      "source": "curated",
+      "title": "Dangerous exec() in Python (CWE-95)",
+      "version": "kb-v1"
+    },
+    {
+      "body": "shell=True passes the command through /bin/sh, so any interpolated value becomes shell metacharacters. Prefer shell=False with an argument list: subprocess.run(['ls', '-l', user_dir], shell=False). If a shell is unavoidable, pass untrusted values through shlex.quote() and keep them as separate arguments, never concatenated into the command string.",
+      "cwe_ids": [
+        "CWE-78"
+      ],
+      "id": "KB-PY-SEC-006",
+      "languages": [
+        "python"
+      ],
+      "rule_ids": [
+        "PY-SEC-006"
+      ],
+      "source": "curated",
+      "title": "subprocess with shell=True in Python (CWE-78)",
+      "version": "kb-v1"
+    },
+    {
+      "body": "os.system() always invokes a shell. Replace with subprocess.run([...], shell=False) using an argument list. Note: the detector matches any .system()/.popen() attribute call, so review whether the receiver is really the os module before treating it as a finding (known limitation documented in the rule).",
+      "cwe_ids": [
+        "CWE-78"
+      ],
+      "id": "KB-PY-SEC-007",
+      "languages": [
+        "python"
+      ],
+      "rule_ids": [
+        "PY-SEC-007"
+      ],
+      "source": "curated",
+      "title": "os.system / os.popen in Python (CWE-78)",
+      "version": "kb-v1"
+    },
+    {
+      "body": "MD5 and SHA-1 are broken for security purposes (collisions). Use hashlib.sha256() or better for digests. For passwords, never use fast hashes: use bcrypt, argon2, or scrypt (e.g. the bcrypt or argon2-cffi packages) with per-password salts. For random tokens use the secrets module, not random.",
+      "cwe_ids": [
+        "CWE-327"
+      ],
+      "id": "KB-PY-SEC-008",
+      "languages": [
+        "python"
+      ],
+      "rule_ids": [
+        "PY-SEC-008"
+      ],
+      "source": "curated",
+      "title": "Weak cryptography in Python (CWE-327)",
+      "version": "kb-v1"
+    },
+    {
+      "body": "Long functions hide bugs and resist testing. Extract coherent blocks into named helper functions with a single responsibility. Aim for functions that fit on one screen and do one thing; each helper gets its own unit test. This is a maintainability rule, not a security weakness.",
+      "cwe_ids": [],
+      "id": "KB-PY-QLT-001",
+      "languages": [
+        "python"
+      ],
+      "rule_ids": [
+        "PY-QLT-001"
+      ],
+      "source": "curated",
+      "title": "Overly long function (maintainability)",
+      "version": "kb-v1"
+    },
+    {
+      "body": "A bare 'except:' swallows KeyboardInterrupt, SystemExit, and real bugs, making failures invisible. Catch the specific exceptions you expect (e.g. except ValueError:), log the error with context, and let unexpected exceptions propagate. If you must catch broadly, use 'except Exception:' and re-raise or log explicitly.",
+      "cwe_ids": [],
+      "id": "KB-PY-QLT-002",
+      "languages": [
+        "python"
+      ],
+      "rule_ids": [
+        "PY-QLT-002"
+      ],
+      "source": "curated",
+      "title": "Bare except clause (maintainability)",
+      "version": "kb-v1"
+    },
+    {
+      "body": "eval() on dynamic input is arbitrary code execution in the page or process. Parse data with JSON.parse(). Dispatch behavior with an object map of allowed function names to functions. There is no safe way to eval() untrusted strings — remove the call.",
+      "cwe_ids": [
+        "CWE-95"
+      ],
+      "id": "KB-JS-SEC-001",
+      "languages": [
+        "javascript",
+        "typescript"
+      ],
+      "rule_ids": [
+        "JS-SEC-001"
+      ],
+      "source": "curated",
+      "title": "Dangerous eval() in JavaScript (CWE-95)",
+      "version": "kb-v1"
+    },
+    {
+      "body": "new Function(code) is eval() by another name. Replace with static functions or a dispatch map. If code must be generated, generate it at build time (bundler/codegen), not at runtime from user input.",
+      "cwe_ids": [
+        "CWE-95"
+      ],
+      "id": "KB-JS-SEC-002",
+      "languages": [
+        "javascript",
+        "typescript"
+      ],
+      "rule_ids": [
+        "JS-SEC-002"
+      ],
+      "source": "curated",
+      "title": "Function constructor with dynamic code (CWE-95)",
+      "version": "kb-v1"
+    },
+    {
+      "body": "child_process.exec/execSync run through a shell. Use execFile/spawn/spawnSync with an argument array and no shell: execFile('git', ['log', ref]). Validate any dynamic argument against an allowlist first. Only set shell: true when you control every character of the command.",
+      "cwe_ids": [
+        "CWE-78"
+      ],
+      "id": "KB-JS-SEC-003",
+      "languages": [
+        "javascript",
+        "typescript"
+      ],
+      "rule_ids": [
+        "JS-SEC-003"
+      ],
+      "source": "curated",
+      "title": "Command injection in Node.js (CWE-78)",
+      "version": "kb-v1"
+    },
+    {
+      "body": "Assigning untrusted data to innerHTML, outerHTML, or document.write() executes attacker markup. Use textContent for text, or create elements via DOM APIs. If HTML is required, sanitize with DOMPurify (or equivalent) with an explicit allowlist. Pair with a Content-Security-Policy that disallows inline scripts.",
+      "cwe_ids": [
+        "CWE-79"
+      ],
+      "id": "KB-JS-SEC-004",
+      "languages": [
+        "javascript",
+        "typescript"
+      ],
+      "rule_ids": [
+        "JS-SEC-004"
+      ],
+      "source": "curated",
+      "title": "DOM XSS sink in JavaScript (CWE-79)",
+      "version": "kb-v1"
+    },
+    {
+      "body": "dangerouslySetInnerHTML bypasses React's escaping. Render data as children (React escapes by default). If raw HTML is unavoidable, sanitize server-side or with DOMPurify before passing it in, and document why the escape hatch is needed.",
+      "cwe_ids": [
+        "CWE-79"
+      ],
+      "id": "KB-JS-SEC-005",
+      "languages": [
+        "javascript",
+        "typescript"
+      ],
+      "rule_ids": [
+        "JS-SEC-005"
+      ],
+      "source": "curated",
+      "title": "React dangerouslySetInnerHTML (CWE-79)",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-JS-SEC-006",
+      "title": "Hardcoded secret in JavaScript (CWE-798)",
+      "body": "A credential committed to source is compromised. Remove it and load from an environment variable (process.env) or a secrets manager. ROTATE the exposed value immediately via the provider's console. Add secret scanning (e.g. gitleaks) to CI so it cannot recur.",
+      "rule_ids": [
+        "JS-SEC-006"
+      ],
+      "cwe_ids": [
+        "CWE-798"
+      ],
+      "languages": [
+        "javascript",
+        "typescript"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-JS-SEC-007",
+      "title": "SQL string construction in JavaScript (CWE-89)",
+      "body": "Never concatenate values into SQL text in Node.js. Use parameterized queries: db.query('SELECT * FROM users WHERE id = ?', [userId]) (mysql2) or $1 placeholders (pg). Query builders/ORMs parameterize by default — but raw() escapes still need placeholders. See OWASP SQL Injection Prevention Cheat Sheet.",
+      "rule_ids": [
+        "JS-SEC-007"
+      ],
+      "cwe_ids": [
+        "CWE-89"
+      ],
+      "languages": [
+        "javascript",
+        "typescript"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-JS-SEC-008",
+      "title": "Weak cryptography in JavaScript (CWE-327)",
+      "body": "crypto.createHash('md5'/'sha1') is broken for security use. Use 'sha256' or better. For passwords use bcrypt/scrypt/argon2 (e.g. the bcrypt or argon2 npm packages) with per-password salts. For tokens use crypto.randomBytes(), not Math.random().",
+      "rule_ids": [
+        "JS-SEC-008"
+      ],
+      "cwe_ids": [
+        "CWE-327"
+      ],
+      "languages": [
+        "javascript",
+        "typescript"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-JS-SEC-009",
+      "title": "Implied eval via setTimeout string (CWE-95)",
+      "body": "setTimeout/setInterval with a string argument is implied eval(). Pass a function reference instead: setTimeout(() => doWork(arg), 1000) rather than setTimeout('doWork(' + arg + ')', 1000). The string form executes in global scope and enables code injection.",
+      "rule_ids": [
+        "JS-SEC-009"
+      ],
+      "cwe_ids": [
+        "CWE-95"
+      ],
+      "languages": [
+        "javascript",
+        "typescript"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-DEP-001",
+      "title": "Vulnerable dependency version (CWE-1104)",
+      "body": "The installed version has a published advisory. Upgrade to the fixed version (or newer) named in the finding, then regenerate the lockfile and re-run tests. If an upgrade is blocked, check the advisory for mitigations and track the exception with an expiry date. Verify the advisory database status stated on the finding — a stale database may miss newer advisories.",
+      "rule_ids": [
+        "DEP-001"
+      ],
+      "cwe_ids": [
+        "CWE-1104"
+      ],
+      "languages": [
+        "supplychain"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-DEP-002",
+      "title": "Unpinned dependency",
+      "body": "Unpinned dependencies make builds non-reproducible and silently accept new (possibly vulnerable) releases. Pin exact versions in requirements (==) and commit lockfiles (Pipfile.lock, package-lock.json, poetry.lock). Use a dependency bot (Dependabot/Renovate) to propose updates as PRs with tests.",
+      "rule_ids": [
+        "DEP-002"
+      ],
+      "cwe_ids": [],
+      "languages": [
+        "supplychain"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-DEP-003",
+      "title": "Advisory database stale or unavailable",
+      "body": "Dependency findings are only as fresh as the advisory database. Refresh it with backend/scripts/refresh_advisories.py (OSV.dev) or set CODEAUDIT_ADVISORY_DB to a current export, and keep CODEAUDIT_ADVISORY_MAX_AGE_DAYS aligned with your update cadence. A stale or missing database means vulnerable versions can be missed — treat 'unavailable' as a gap, not a clean bill.",
+      "rule_ids": [
+        "DEP-003"
+      ],
+      "cwe_ids": [],
+      "languages": [
+        "supplychain"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-DEP-004",
+      "title": "Manifest parse error",
+      "body": "A manifest that cannot be parsed cannot be audited. Fix the syntax error reported (TOML/JSON/YAML validity, correct section names), then re-run the scan. Validate manifests in CI so breakage is caught at commit time.",
+      "rule_ids": [
+        "DEP-004"
+      ],
+      "cwe_ids": [],
+      "languages": [
+        "supplychain"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-SECRET-001",
+      "title": "Private key material committed (CWE-312)",
+      "body": "A private key in the repository must be considered compromised. Remove it from the repo AND its history (git filter-repo or BFG), revoke/replace the keypair everywhere it was trusted, and issue new keys stored in a secrets manager or dedicated key store. Never commit .pem/.key files; add them to .gitignore.",
+      "rule_ids": [
+        "SECRET-001"
+      ],
+      "cwe_ids": [
+        "CWE-312"
+      ],
+      "languages": [
+        "supplychain"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-SECRET-002",
+      "title": "AWS access key committed (CWE-798)",
+      "body": "An AWS access key in source is compromised. Deactivate and delete it in IAM immediately, then create a replacement stored in a secrets manager or injected as environment variables at deploy time. Prefer IAM roles for EC2/ECS/Lambda over long-lived keys entirely. Scan history with git log -S.",
+      "rule_ids": [
+        "SECRET-002"
+      ],
+      "cwe_ids": [
+        "CWE-798"
+      ],
+      "languages": [
+        "supplychain"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-SECRET-003",
+      "title": "GitHub token committed (CWE-798)",
+      "body": "A GitHub token in source is compromised. Revoke it at github.com/settings/tokens immediately and replace with a fine-grained token with minimal scopes, stored as an Actions secret or in a secrets manager. Audit the account's recent activity for misuse.",
+      "rule_ids": [
+        "SECRET-003"
+      ],
+      "cwe_ids": [
+        "CWE-798"
+      ],
+      "languages": [
+        "supplychain"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-SECRET-004",
+      "title": "Google API key committed (CWE-798)",
+      "body": "A Google API key in source is compromised. Restrict it in the Google Cloud console (API restrictions + application restrictions) and rotate it. Store the new key server-side only — never ship API keys in client-side code or public repos.",
+      "rule_ids": [
+        "SECRET-004"
+      ],
+      "cwe_ids": [
+        "CWE-798"
+      ],
+      "languages": [
+        "supplychain"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-SECRET-005",
+      "title": "Stripe secret key committed (CWE-798)",
+      "body": "A Stripe secret key in source is compromised. Roll it immediately in the Stripe dashboard (Developers > API keys), replace with a restricted key with only the permissions needed, and load it from environment variables. Review the account's event log for unauthorized activity.",
+      "rule_ids": [
+        "SECRET-005"
+      ],
+      "cwe_ids": [
+        "CWE-798"
+      ],
+      "languages": [
+        "supplychain"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-SECRET-006",
+      "title": "High-entropy secret-like string (CWE-798)",
+      "body": "A high-entropy string assigned to a secret-like name is very likely a credential. Verify what it is: if real, rotate it and move it to a secrets manager or environment variable; if a test fixture, mark it clearly (e.g. a TEST_ prefix and documentation) so scanners can allowlist it. The evidence shown is redacted — retrieve the original from a safe checkout to identify it.",
+      "rule_ids": [
+        "SECRET-006"
+      ],
+      "cwe_ids": [
+        "CWE-798"
+      ],
+      "languages": [
+        "supplychain"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-CFG-001",
+      "title": "Dockerfile runs as root (CWE-250)",
+      "body": "Containers running as root amplify any container escape. Add a non-root user: create it in the Dockerfile (RUN useradd / groupadd) and switch with USER before the entrypoint. Ensure file permissions allow the app to run unprivileged. (CWE-250: execution with unnecessary privileges.)",
+      "rule_ids": [
+        "CFG-001"
+      ],
+      "cwe_ids": [
+        "CWE-250"
+      ],
+      "languages": [
+        "supplychain"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-CFG-002",
+      "title": "Dockerfile uses :latest tag",
+      "body": ":latest is a moving target — builds are non-reproducible and may silently pull vulnerable updates. Pin the base image to a specific tag and, for strong guarantees, to a digest (image:tag@sha256:...). Use Dependabot/Renovate to propose base-image updates as tested PRs.",
+      "rule_ids": [
+        "CFG-002"
+      ],
+      "cwe_ids": [],
+      "languages": [
+        "supplychain"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-CFG-003",
+      "title": "Secret in Dockerfile ENV/ARG (CWE-798)",
+      "body": "Secrets in ENV/ARG are baked into image layers and visible to anyone with the image. Use BuildKit secret mounts (RUN --mount=type=secret) for build-time secrets and inject runtime secrets via the orchestrator (environment from a secrets manager), never committed Dockerfiles. Rotate any exposed value.",
+      "rule_ids": [
+        "CFG-003"
+      ],
+      "cwe_ids": [
+        "CWE-798"
+      ],
+      "languages": [
+        "supplychain"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-CFG-004",
+      "title": "Dockerfile uses ADD instead of COPY",
+      "body": "ADD has surprising behaviors (tar extraction, remote URLs). Prefer COPY for plain file copies — it is explicit and auditable. Reserve ADD for the cases only it handles, and document why.",
+      "rule_ids": [
+        "CFG-004"
+      ],
+      "cwe_ids": [],
+      "languages": [
+        "supplychain"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-CFG-005",
+      "title": "curl piped to shell in Dockerfile (CWE-494)",
+      "body": "curl|sh installs unaudited code with no integrity check. Download the artifact, verify its checksum (sha256sum) or signature (cosign/gpg) against the publisher's published value, then install from the verified local file. Pin the URL to a versioned release asset.",
+      "rule_ids": [
+        "CFG-005"
+      ],
+      "cwe_ids": [
+        "CWE-494"
+      ],
+      "languages": [
+        "supplychain"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-CFG-010",
+      "title": "GitHub Actions overly broad permissions (CWE-250)",
+      "body": "permissions: write-all grants every job the maximum token scope. Set workflow-level permissions to the minimum needed (often contents: read) and grant per-job only what each job requires. Review the GitHub Actions permissions documentation for the exact scopes each step needs.",
+      "rule_ids": [
+        "CFG-010"
+      ],
+      "cwe_ids": [
+        "CWE-250"
+      ],
+      "languages": [
+        "supplychain"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-CFG-011",
+      "title": "pull_request_target with checkout (CWE-250)",
+      "body": "pull_request_target runs in the base-repo context with a privileged token; checking out the PR's code and executing it enables script injection (pwn requests). Prefer pull_request for untrusted forks. If pull_request_target is required, never checkout+run untrusted code in the same job — split into a build job (unprivileged) and a privileged label/comment job.",
+      "rule_ids": [
+        "CFG-011"
+      ],
+      "cwe_ids": [
+        "CWE-250"
+      ],
+      "languages": [
+        "supplychain"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-CFG-012",
+      "title": "Unpinned GitHub Action reference (CWE-1104)",
+      "body": "Unpinned third-party actions (branches, tags like @v3) can change under you, including via tag hijack. Pin actions to a full commit SHA (uses: owner/action@sha) and add a comment with the version. Dependabot can keep SHA pins updated.",
+      "rule_ids": [
+        "CFG-012"
+      ],
+      "cwe_ids": [
+        "CWE-1104"
+      ],
+      "languages": [
+        "supplychain"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-CFG-020",
+      "title": "Compose service runs privileged (CWE-250)",
+      "body": "privileged: true disables container isolation. Remove it and grant only the specific Linux capabilities the workload needs (cap_add), or the specific devices. If privileged is truly required, isolate that service and document the justification.",
+      "rule_ids": [
+        "CFG-020"
+      ],
+      "cwe_ids": [
+        "CWE-250"
+      ],
+      "languages": [
+        "supplychain"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-CFG-021",
+      "title": "Secret in compose environment (CWE-798)",
+      "body": "Secrets in compose environment: are committed alongside the file. Use Docker secrets (secrets: + /run/secrets) or an env_file that is gitignored and provisioned at deploy time. Rotate any exposed value and purge it from history.",
+      "rule_ids": [
+        "CFG-021"
+      ],
+      "cwe_ids": [
+        "CWE-798"
+      ],
+      "languages": [
+        "supplychain"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-GEN-001",
+      "title": "General: parameterized queries",
+      "body": "The single most effective SQL injection defense: never build SQL by string concatenation. Use parameterized queries / prepared statements in every language (placeholders differ: %s, ?, $1 — check your driver). Validate this pattern in code review: any query string built with + or f-strings near a db call is a bug until proven otherwise.",
+      "rule_ids": [],
+      "cwe_ids": [
+        "CWE-89"
+      ],
+      "languages": [
+        "python",
+        "javascript",
+        "typescript"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-GEN-002",
+      "title": "General: subprocess without shell",
+      "body": "When launching subprocesses, never route untrusted data through a shell. Use argument arrays with shell disabled (Python: shell=False; Node: execFile/spawn without shell:true). Validate arguments against an allowlist where possible. Reserve shell features (pipes, globs) for fully static command strings.",
+      "rule_ids": [],
+      "cwe_ids": [
+        "CWE-78"
+      ],
+      "languages": [
+        "python",
+        "javascript",
+        "typescript"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-GEN-003",
+      "title": "General: output encoding against XSS",
+      "body": "XSS is defeated by encoding output for its context: HTML-encode text nodes, attribute-encode attribute values, JS-encode values in scripts — frameworks do the first by default when you avoid raw-HTML escape hatches. Sanitize any HTML you must render (DOMPurify/bleach with allowlists) and deploy a Content-Security-Policy without 'unsafe-inline' as defense in depth.",
+      "rule_ids": [],
+      "cwe_ids": [
+        "CWE-79"
+      ],
+      "languages": [
+        "python",
+        "javascript",
+        "typescript"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-GEN-004",
+      "title": "General: secret management",
+      "body": "Secrets do not belong in source, logs, or error messages. Load from environment variables or a secrets manager at runtime; rotate on any suspected exposure; scope tokens to least privilege with expiry. Add a pre-commit secret scanner and CI scanning (gitleaks/trufflehog) so leaks are caught before merge.",
+      "rule_ids": [],
+      "cwe_ids": [
+        "CWE-798"
+      ],
+      "languages": [
+        "python",
+        "javascript",
+        "typescript",
+        "supplychain"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-GEN-005",
+      "title": "General: dependency pinning hygiene",
+      "body": "Pin exact dependency versions, commit lockfiles, and automate updates (Dependabot/Renovate) so upgrades arrive as tested PRs. Maintain a current advisory feed (OSV.dev) and a policy for vulnerable-version exceptions with expiry dates. Reproducible builds are a security property, not just convenience.",
+      "rule_ids": [],
+      "cwe_ids": [
+        "CWE-1104"
+      ],
+      "languages": [
+        "python",
+        "javascript",
+        "typescript",
+        "supplychain"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-GEN-006",
+      "title": "General: Content-Security-Policy basics",
+      "body": "A Content-Security-Policy (e.g. default-src 'self'; script-src 'self') sharply limits the blast radius of any XSS that slips through: inline scripts and unexpected origins are blocked by the browser. Deploy in report-only mode first to find violations, then enforce. CSP is defense in depth — it does not replace output encoding.",
+      "rule_ids": [],
+      "cwe_ids": [
+        "CWE-79"
+      ],
+      "languages": [
+        "python",
+        "javascript",
+        "typescript"
+      ],
+      "source": "curated",
+      "version": "kb-v1"
+    },
+    {
+      "id": "KB-LIVE-001",
+      "title": "Missing Content-Security-Policy (CWE-693)",
+      "body": "Deploy a Content-Security-Policy header restricting script, style, and object sources (e.g. default-src 'self'). Start in report-only mode (Content-Security-Policy-Report-Only) to find violations before enforcing. A strong CSP is the main browser-level mitigation for XSS even when an injection point exists.",
+      "rule_ids": [
+        "LIVE-001"
+      ],
+      "cwe_ids": [
+        "CWE-693"
+      ],
+      "languages": [
+        "website"
+      ],
+      "source": "curated",
+      "version": "kb-v2"
+    },
+    {
+      "id": "KB-LIVE-002",
+      "title": "Missing Strict-Transport-Security (CWE-319)",
+      "body": "Send Strict-Transport-Security: max-age=31536000; includeSubDomains on all HTTPS responses (preload after verifying). This stops browsers from ever using plain HTTP for the host, defeating sslstrip-style downgrade attacks. Only meaningful over HTTPS.",
+      "rule_ids": [
+        "LIVE-002"
+      ],
+      "cwe_ids": [
+        "CWE-319"
+      ],
+      "languages": [
+        "website"
+      ],
+      "source": "curated",
+      "version": "kb-v2"
+    },
+    {
+      "id": "KB-LIVE-003",
+      "title": "Missing X-Frame-Options (CWE-1021)",
+      "body": "Set X-Frame-Options: DENY (or SAMEORIGIN if framing is needed) or, preferably, a Content-Security-Policy frame-ancestors directive. This prevents clickjacking by stopping third-party sites from framing the page.",
+      "rule_ids": [
+        "LIVE-003"
+      ],
+      "cwe_ids": [
+        "CWE-1021"
+      ],
+      "languages": [
+        "website"
+      ],
+      "source": "curated",
+      "version": "kb-v2"
+    },
+    {
+      "id": "KB-LIVE-004",
+      "title": "Missing X-Content-Type-Options (CWE-693)",
+      "body": "Send X-Content-Type-Options: nosniff on every response so browsers honor the declared Content-Type instead of sniffing it. This blocks attacks that smuggle scripts inside non-HTML content types.",
+      "rule_ids": [
+        "LIVE-004"
+      ],
+      "cwe_ids": [
+        "CWE-693"
+      ],
+      "languages": [
+        "website"
+      ],
+      "source": "curated",
+      "version": "kb-v2"
+    },
+    {
+      "id": "KB-LIVE-005",
+      "title": "Missing or permissive Referrer-Policy (CWE-200)",
+      "body": "Set Referrer-Policy: strict-origin-when-cross-origin (or stricter, e.g. same-origin) so full URLs — which may embed tokens or personal data — are not leaked to third parties via the Referer header. Never use unsafe-url.",
+      "rule_ids": [
+        "LIVE-005"
+      ],
+      "cwe_ids": [
+        "CWE-200"
+      ],
+      "languages": [
+        "website"
+      ],
+      "source": "curated",
+      "version": "kb-v2"
+    },
+    {
+      "id": "KB-LIVE-006",
+      "title": "Cookies missing Secure/HttpOnly/SameSite (CWE-614, CWE-1004)",
+      "body": "Set Secure on every cookie served over HTTPS, HttpOnly on cookies JavaScript does not need, and an explicit SameSite value (Lax by default; Strict for sensitive flows; None only with Secure for genuine cross-site use). These flags shrink session theft via network sniffing, XSS, and CSRF respectively.",
+      "rule_ids": [
+        "LIVE-006"
+      ],
+      "cwe_ids": [
+        "CWE-614",
+        "CWE-1004"
+      ],
+      "languages": [
+        "website"
+      ],
+      "source": "curated",
+      "version": "kb-v2"
+    },
+    {
+      "id": "KB-LIVE-007",
+      "title": "Site served over plain HTTP (CWE-319)",
+      "body": "Serve the site over HTTPS with a valid certificate and redirect all HTTP traffic to HTTPS (301). Obtain certificates from a trusted CA and automate renewal. Plain HTTP exposes credentials, cookies, and personal data to interception and modification in transit.",
+      "rule_ids": [
+        "LIVE-007"
+      ],
+      "cwe_ids": [
+        "CWE-319"
+      ],
+      "languages": [
+        "website"
+      ],
+      "source": "curated",
+      "version": "kb-v2"
+    },
+    {
+      "id": "KB-LIVE-008",
+      "title": "Server banner discloses version (CWE-200)",
+      "body": "Suppress or generalize version banners: e.g. ServerTokens Prod / ServerSignature Off for Apache, server_tokens off for nginx, and remove X-Powered-By / X-AspNet-Version headers. Version banners help attackers match the deployment against known CVEs.",
+      "rule_ids": [
+        "LIVE-008"
+      ],
+      "cwe_ids": [
+        "CWE-200"
+      ],
+      "languages": [
+        "website"
+      ],
+      "source": "curated",
+      "version": "kb-v2"
+    },
+    {
+      "id": "KB-LIVE-009",
+      "title": "Exposed .git/HEAD or .env (CWE-200)",
+      "body": "Block public access to /.git/HEAD, /.env, and other sensitive paths at the web server or CDN layer (return 404/403). If a .env was ever reachable, ROTATE every secret it contained — removing the file does not un-expose them. Never deploy .git directories to web roots.",
+      "rule_ids": [
+        "LIVE-009"
+      ],
+      "cwe_ids": [
+        "CWE-200"
+      ],
+      "languages": [
+        "website"
+      ],
+      "source": "curated",
+      "version": "kb-v2"
+    },
+    {
+      "id": "KB-LIVE-010",
+      "title": "TLS certificate problem (CWE-297)",
+      "body": "Serve a certificate from a trusted CA whose Subject Alternative Names cover the hostname, valid for the current date. Automate renewal (e.g. ACME/Certbot) with monitoring that alerts well before expiry. Do not bypass certificate validation client-side to work around it.",
+      "rule_ids": [
+        "LIVE-010"
+      ],
+      "cwe_ids": [
+        "CWE-297"
+      ],
+      "languages": [
+        "website"
+      ],
+      "source": "curated",
+      "version": "kb-v2"
+    },
+    {
+      "id": "KB-LIVE-020",
+      "title": "Possible reflected XSS probe finding (CWE-79)",
+      "body": "This is a PROBE result, not a confirmed vulnerability: verify manually before acting. If confirmed, HTML-encode all untrusted data at output (or rely on framework auto-escaping), validate input on arrival, and deploy a Content-Security-Policy as defense in depth.",
+      "rule_ids": [
+        "LIVE-020"
+      ],
+      "cwe_ids": [
+        "CWE-79"
+      ],
+      "languages": [
+        "website"
+      ],
+      "source": "curated",
+      "version": "kb-v2"
+    },
+    {
+      "id": "KB-LIVE-021",
+      "title": "Possible SQL injection probe finding (CWE-89)",
+      "body": "This is a PROBE result, not a confirmed vulnerability: verify manually before acting. If confirmed, replace string-interpolated SQL with parameterized queries / prepared statements, apply least-privilege DB accounts, and ensure detailed DB errors never reach clients in production.",
+      "rule_ids": [
+        "LIVE-021"
+      ],
+      "cwe_ids": [
+        "CWE-89"
+      ],
+      "languages": [
+        "website"
+      ],
+      "source": "curated",
+      "version": "kb-v2"
+    }
+  ],
+  "version": "kb-v2"
+}
