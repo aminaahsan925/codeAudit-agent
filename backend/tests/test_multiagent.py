@@ -130,7 +130,7 @@ def _agent_ctx(**overrides) -> AgentContext:
     # the specialists' AST detections, all through the evidence hard gate.
     orch = AnalysisOrchestrator(ai_provider=StubAIProvider())
     scan = orch.scan_files(DEMO)
-    parsed, _ = orch.parse(scan)
+    parsed, _, _ = orch.parse(scan)
     prelim = AgentContext(
         execution_id="test-prelim",
         repository=REPO,

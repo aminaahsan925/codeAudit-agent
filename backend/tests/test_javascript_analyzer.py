@@ -157,7 +157,10 @@ def test_js_finding_ids_evidence_and_attribution(fixtures_dir: Path):
     assert eval_finding.suggested_fix
 
     secret = by_detector["js_hardcoded_secret"]
-    assert secret.evidence == 'const apiKey = "sk-live-9f8e7d6c5b4a3928173645";'
+    # Phase 4: sensitive findings carry redacted evidence (the raw secret
+    # never appears in a finding).
+    assert secret.evidence == 'const apiKey = "[REDACTED]";'
+    assert secret.sensitive is True
 
     sql = [f for f in findings if f.detector == "js_sql_string_construction"]
     assert len(sql) == 2  # template literal + concatenation

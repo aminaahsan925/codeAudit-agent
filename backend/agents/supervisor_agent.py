@@ -229,7 +229,7 @@ class SupervisorAgent:
 
         orch = self._orchestrator
         scan = orch.scan_files(repo_dir)
-        parsed, failed_parse = orch.parse(scan)
+        parsed, _sources, failed_parse = orch.parse(scan)
 
         # Deterministic detection: existing static analyzer plus the
         # specialists' conservative AST rules. Everything is gated below.

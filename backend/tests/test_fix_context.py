@@ -40,7 +40,7 @@ def _parsed(fixtures_dir: Path):
 
     scan = repository_scanner.scan_repository(fixtures_dir / "remediation_sqli")
     orch = AnalysisOrchestrator(ai_provider=StubAIProvider())
-    parsed, _ = orch.parse(scan)
+    parsed, _, _ = orch.parse(scan)
     return scan.contents, parsed
 
 

@@ -11,12 +11,11 @@ ASSESSMENT APPLICATION (enrichment of deterministic findings):
     unknown ids and duplicate assessments are ignored (counted).
   * Every verdict ("confirmed", "uncertain", "unlikely") attaches the AI's
     reasoning and suggested_fix (if given) for transparency.
-  * NEVER changed by AI: id, file, line, evidence, severity, detector,
-    source, confidence. AI enriches; it never rewrites the evidence anchor,
-    never deletes a deterministic finding, and never downgrades a
-    deterministic confidence merely because it disagrees (Phase 3, §7.5).
-    The verdict and reasoning are recorded in ai_reasoning so reviewers
-    can see the disagreement without the finding being suppressed.
+  * Verdicts demote confidence: "uncertain" drops one step, "unlikely"
+    drops to LOW (the finding is kept, never deleted). "confirmed" leaves
+    confidence untouched. NEVER changed by AI: id, file, line, evidence,
+    severity, detector, source. AI enriches; it never rewrites the evidence
+    anchor.
 
 DEDUPLICATION (AI candidates vs deterministic findings):
   * Match key: same normalized file + same category + |line diff| <= 2.
@@ -41,6 +40,8 @@ from dataclasses import dataclass, field
 from models.schemas import (
     AIAssessment,
     AIFindingCandidate,
+    AIVerdict,
+    Confidence,
     Finding,
     FindingSource,
 )
@@ -82,15 +83,29 @@ class MergedAIResults:
 
 
 def _apply_one_assessment(finding: Finding, assessment: AIAssessment) -> Finding:
-    # Phase 3 (§7.5): the AI's verdict is recorded, never applied as a
-    # downgrade. Confidence and severity are deterministic-only.
+    # The AI's verdict is recorded in ai_reasoning; verdicts also demote
+    # confidence: UNCERTAIN drops one step, UNLIKELY drops to LOW (the
+    # finding is kept — only a human or retest removes it). CONFIRMED
+    # leaves confidence untouched. Severity stays deterministic-only.
     updates: dict = {
         "ai_reasoning": assessment.reasoning,
         "prompt_version": finding.prompt_version,
     }
+    if assessment.verdict == AIVerdict.UNCERTAIN:
+        updates["confidence"] = _demote_confidence(finding.confidence, 1)
+    elif assessment.verdict == AIVerdict.UNLIKELY:
+        updates["confidence"] = Confidence.LOW
     if assessment.suggested_fix:
         updates["suggested_fix"] = assessment.suggested_fix
     return finding.model_copy(update=updates)
+
+
+_CONFIDENCE_ORDER = [Confidence.LOW, Confidence.MEDIUM, Confidence.HIGH]
+
+
+def _demote_confidence(confidence: Confidence, steps: int) -> Confidence:
+    idx = _CONFIDENCE_ORDER.index(confidence)
+    return _CONFIDENCE_ORDER[max(0, idx - steps)]
 
 
 def apply_assessments(

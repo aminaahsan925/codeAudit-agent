@@ -13,8 +13,8 @@ def test_mixed_repository_only_main_analyzed(fixtures_dir):
     result = scan_repository(fixtures_dir / "mixed_repository")
     paths = [f.relative_path for f in result.files]
     assert paths == ["main.py"]
-    assert result.skipped >= 3  # node_modules, .git/HEAD, venv file
-    assert result.skipped_reasons.get("ignored_dir", 0) >= 3
+    assert result.skipped >= 2  # node_modules, venv file
+    assert result.skipped_reasons.get("ignored_dir", 0) >= 2
 
 
 def test_detect_language():

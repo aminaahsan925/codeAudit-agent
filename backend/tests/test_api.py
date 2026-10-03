@@ -165,7 +165,7 @@ def test_dropped_findings_surfaced_in_summary(fixtures_dir, monkeypatch):
         root = Path(tmp) / "demo"
         root.mkdir()
         shutil.copytree(fixtures_dir / "safe_python", root / "ok")
-        monkeypatch.setattr(orchestrator, "analyze_static", lambda scan: [ghost])
+        monkeypatch.setattr(orchestrator, "analyze_static", lambda scan, sources=None, deadline=None: [ghost])
         result = orchestrator.run_on_local_path(root)
 
     assert result.summary.findings_total == 0
