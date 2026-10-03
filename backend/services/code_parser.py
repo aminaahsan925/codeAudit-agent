@@ -52,8 +52,16 @@ def _symbols_from_tree(tree: ast.AST) -> list[CodeSymbol]:
     return symbols
 
 
-def parse_python(relative_path: str, content: str) -> ParsedFile:
-    """Parse one Python file. Syntax errors become structured parse errors."""
+def parse_python_tree(
+    relative_path: str, content: str
+) -> tuple[ParsedFile, ast.AST | None]:
+    """Parse one Python file, returning (ParsedFile, AST-or-None).
+
+    The AST is returned alongside the parsed file so analysis stages can
+    reuse the already-parsed tree instead of parsing the same content a
+    second time. ``None`` means parsing failed; the failure is captured
+    structurally in ``ParsedFile.parse_error``, exactly as before.
+    """
     try:
         tree = ast.parse(content, filename=relative_path)
     except SyntaxError as exc:
@@ -62,19 +70,25 @@ def parse_python(relative_path: str, content: str) -> ParsedFile:
             relative_path=relative_path,
             language="python",
             parse_error=f"SyntaxError at line {exc.lineno}: {exc.msg}",
-        )
+        ), None
     except (ValueError, MemoryError, RecursionError) as exc:
         logger.debug("Parse failed for %s: %s", relative_path, exc)
         return ParsedFile(
             relative_path=relative_path,
             language="python",
             parse_error=f"{type(exc).__name__}: {exc}",
-        )
+        ), None
     return ParsedFile(
         relative_path=relative_path,
         language="python",
         symbols=_symbols_from_tree(tree),
-    )
+    ), tree
+
+
+def parse_python(relative_path: str, content: str) -> ParsedFile:
+    """Parse one Python file. Syntax errors become structured parse errors."""
+    parsed, _ = parse_python_tree(relative_path, content)
+    return parsed
 
 
 def parse_file(relative_path: str, language: str | None, content: str) -> ParsedFile | None:
