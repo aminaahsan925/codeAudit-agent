@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import Any
 
 from models.schemas import CodeSymbol, Finding
 
@@ -23,12 +24,19 @@ class ParsedSource:
     knowing which language produced it. Parsing never raises on bad input: a
     total failure is captured structurally in parse_error, exactly like the
     Python path.
+
+    ``tree`` carries the native parse tree (``ast.Module`` for Python,
+    tree-sitter ``Tree`` for JavaScript/TypeScript) so analysis stages can
+    reuse it instead of re-parsing the same content. It is internal to the
+    analysis stage: ``None`` when parsing failed or the analyzer does not
+    retain trees. Never serialized.
     """
 
     relative_path: str
     language: str
     symbols: list[CodeSymbol] = field(default_factory=list)
     parse_error: str | None = None
+    tree: Any = None
 
 
 class LanguageAnalyzer(ABC):
@@ -51,3 +59,15 @@ class LanguageAnalyzer(ABC):
         are conservative by design.
         """
         ...
+
+    def analyze_parsed(
+        self, relative_path: str, content: str, parsed: ParsedSource
+    ) -> list[Finding]:
+        """Run detectors reusing an already-parsed tree.
+
+        ``parsed`` must come from this analyzer's ``parse_source`` for the
+        same content. The default implementation falls back to
+        ``analyze_file`` (which re-parses); analyzers SHOULD override this
+        to consume ``parsed.tree`` and avoid the double parse.
+        """
+        return self.analyze_file(relative_path, content)
