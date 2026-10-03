@@ -35,6 +35,7 @@ class Confidence(str, Enum):
 class FindingSource(str, Enum):
     DETERMINISTIC = "deterministic"
     AI = "ai"
+    LIVE_SCAN = "live-scan"
 
 
 class AIVerdict(str, Enum):
@@ -55,6 +56,9 @@ class AIStatusValue(str, Enum):
 class AnalysisRequest(BaseModel):
     repository_url: str = Field(
         ..., description="Public GitHub repository URL, e.g. https://github.com/owner/repo"
+    )
+    project_id: Optional[str] = Field(
+        default=None, description="Optional project to attach this analysis to"
     )
 
 
@@ -123,6 +127,23 @@ class Finding(BaseModel):
     # that did not happen.
     provenance: Optional["FindingProvenance"] = Field(
         default=None, description="Agent participation trail for this finding"
+    )
+    # Phase 4: secret-material findings carry redacted evidence. Defaults
+    # False so existing findings are unaffected.
+    sensitive: bool = Field(
+        default=False, description="Finding contains secret material; evidence is redacted"
+    )
+    # CWE identifiers (e.g. ["CWE-79"]) used for knowledge-base matching.
+    cwe_ids: list[str] = Field(
+        default_factory=list, description="CWE identifiers for this finding"
+    )
+    # Rule that produced this finding (e.g. "PY001"); None when not rule-based.
+    rule_id: Optional[str] = Field(
+        default=None, description="Rule identifier, when the finding is rule-based"
+    )
+    # Knowledge-base entries consulted for this finding (fix guidance).
+    knowledge_used: list[str] = Field(
+        default_factory=list, description="KB entry ids used for this finding"
     )
 
 
@@ -348,6 +369,10 @@ class AnalysisResult(BaseModel):
     findings: list[ValidatedFinding]
     risk: RiskResult
     ai: AIStatus = Field(default_factory=_disabled_ai_status)
+    # Phase 4: SBOM attached to result metadata (optional; built best-effort).
+    sbom: Optional[dict] = Field(
+        default=None, description="Software bill of materials, when generated"
+    )
     # Multi-agent upgrade (Phase 3): optional so older clients keep working.
     agents: Optional[AgentRunSummary] = Field(
         default=None, description="Per-agent execution metadata, when run via the supervisor"
@@ -455,6 +480,11 @@ class FixProposal(BaseModel):
     provider: str = ""
     model: str = ""
     prompt_version: str = ""
+    # KB entries the model claims to have cited (system verifies against
+    # knowledge_used; never trusted blindly).
+    knowledge_cited: Optional[list[str]] = Field(
+        default=None, description="KB entry ids cited by the model"
+    )
 
     @model_validator(mode="after")
     def _decision_matches_changes(self) -> "FixProposal":
@@ -527,3 +557,102 @@ class RemediationRequest(BaseModel):
 class BatchRemediationRequest(BaseModel):
     repository_url: str = Field(..., min_length=1)
     finding_ids: List[str] = Field(..., min_length=1)
+
+
+# ---------------------------------------------------------------------------
+# Live website scanning (Phase B) — mirrors the livescan engine contract.
+# ---------------------------------------------------------------------------
+
+class WebsiteScanRequest(BaseModel):
+    target_url: str = Field(..., min_length=1)
+    authorization_token: str = ""
+    i_authorize_this_scan: bool = False
+    include_subdomains: bool = False
+    path_prefix: Optional[str] = None
+    max_pages: Optional[int] = None
+    active_probes: bool = True
+    session_cookie: Optional[str] = None
+    authorization_header: Optional[str] = None
+    project_id: Optional[str] = Field(
+        default=None, description="Optional project to attach this scan to"
+    )
+
+
+class WebsiteScanResult(BaseModel):
+    target_url: str
+    scan_host: str
+    scope: str
+    urls_scanned: List[str] = Field(default_factory=list)
+    urls_skipped_out_of_scope: List[str] = Field(default_factory=list)
+    findings: List[Finding] = Field(default_factory=list)
+    checks_run: dict = Field(default_factory=dict)
+    requests_made: int = 0
+    truncated: bool = False
+    duration_ms: int = 0
+    disclaimer: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Async jobs (Phase 7) — the frontend's "Run as background job" flow.
+# ---------------------------------------------------------------------------
+
+class JobEnqueueResponse(BaseModel):
+    job_id: str
+
+
+class JobStatusResponse(BaseModel):
+    job_id: str
+    kind: str
+    state: str  # queued | running | done | failed | cancelled
+    result: Optional[dict] = None
+    error_code: Optional[str] = None
+    error_message: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Projects + finding lifecycle (Phase 8).
+# ---------------------------------------------------------------------------
+
+class ProjectCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+
+
+class ProjectResponse(BaseModel):
+    id: str
+    name: str
+    created_at: Optional[str] = None
+
+
+class FindingStatusUpdate(BaseModel):
+    fingerprint: str = Field(..., min_length=1)
+    status: str = Field(..., description="acknowledged | fixed")
+
+
+class FindingWithFingerprint(BaseModel):
+    fingerprint: str
+    finding: dict
+
+
+class FindingStatusResponse(BaseModel):
+    fingerprint: str
+    status: str
+    updated_at: Optional[str] = None
+
+
+class ProjectScansResponse(BaseModel):
+    repo_analyses: List[dict] = Field(default_factory=list)
+    website_scans: List[dict] = Field(default_factory=list)
+
+
+class RetestRequest(BaseModel):
+    kind: str = Field(..., description="repo_analysis | website_scan")
+    authorization_token: Optional[str] = None
+    i_authorize_this_scan: bool = False
+
+
+class RetestResponse(BaseModel):
+    new: List[dict] = Field(default_factory=list)
+    persisting: List[dict] = Field(default_factory=list)
+    resolved: List[dict] = Field(default_factory=list)

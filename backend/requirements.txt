@@ -9,3 +9,4 @@ tree-sitter-javascript==0.25.0
 tree-sitter-typescript==0.23.2
 packaging==26.3
 sqlalchemy==2.0.44
+httpx==0.28.1

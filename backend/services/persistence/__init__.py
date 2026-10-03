@@ -9,14 +9,16 @@ Submodules:
 - ``models``: SQLAlchemy ORM entities.
 - ``database``: engine/session lifecycle, schema versioning + upgrades,
   SQLite file permissions.
-- ``auth``: API-key issuance and verification (salted hashes only).
-- ``repository``: tenant-scoped data access (every query scoped by user).
 - ``jobs``: durable scan/analysis job queue + dev-only in-process worker.
-- ``metering``: per-API-key usage counters (billing input, Phase 11).
+
+NOTE: ``auth`` (API-key issuance), ``repository`` (tenant-scoped DAL) and
+``metering`` (usage counters) are documented next steps and are not
+imported here until they land — importing this package must never fail
+on a missing optional submodule.
 """
 
 from __future__ import annotations
 
-from services.persistence import auth, database, jobs, metering, models, repository
+from services.persistence import database, jobs, models
 
-__all__ = ["auth", "database", "jobs", "metering", "models", "repository"]
+__all__ = ["database", "jobs", "models"]

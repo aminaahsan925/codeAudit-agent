@@ -8,6 +8,8 @@ never followed. Nothing is executed.
 from __future__ import annotations
 
 import logging
+import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -33,6 +35,38 @@ class RepositoryTooLargeError(Exception):
     code = "REPOSITORY_TOO_LARGE"
 
 
+class AnalysisTimeoutError(Exception):
+    """Raised when the analysis wall-clock budget is exhausted."""
+
+    code = "ANALYSIS_TIMEOUT"
+
+
+def analysis_deadline() -> float | None:
+    """Wall-clock deadline (monotonic seconds) for the analysis pipeline.
+
+    Reads ``CODEAUDIT_ANALYSIS_WALL_CLOCK_SECONDS``; returns None when
+    unset, meaning the pipeline runs without deadline checks.
+    """
+    raw = os.environ.get("CODEAUDIT_ANALYSIS_WALL_CLOCK_SECONDS", "").strip()
+    if not raw:
+        return None
+    try:
+        budget = float(raw)
+    except ValueError:
+        return None
+    if budget <= 0:
+        return None
+    return time.monotonic() + budget
+
+
+def check_deadline(deadline: float | None) -> None:
+    """Raise AnalysisTimeoutError if a deadline has passed. No-op when None."""
+    if deadline is not None and time.monotonic() > deadline:
+        raise AnalysisTimeoutError(
+            "Repository analysis exceeded its wall-clock budget."
+        )
+
+
 def detect_language(path: Path) -> str | None:
     """Language from file extension. None for unrecognized files."""
     return LANGUAGE_BY_EXTENSION.get(path.suffix.lower())
@@ -52,12 +86,13 @@ def _record_skip(result: ScanResult, reason: str) -> None:
     result.skipped_reasons[reason] = result.skipped_reasons.get(reason, 0) + 1
 
 
-def scan_repository(root: Path) -> ScanResult:
+def scan_repository(root: Path, deadline: float | None = None) -> ScanResult:
     """Discover analyzable files under root. Never follows symlinks."""
     result = ScanResult()
     total_bytes = 0
 
     for path in sorted(root.rglob("*")):
+        check_deadline(deadline)
         if path.is_symlink():
             _record_skip(result, "symlink")
             continue

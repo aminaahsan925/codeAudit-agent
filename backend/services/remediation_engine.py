@@ -275,7 +275,7 @@ class RemediationEngine:
                 risk_before,
             )
 
-        parsed, _ = self._verify_orchestrator.parse(scan)
+        parsed, _sources, _failed = self._verify_orchestrator.parse(scan)
         fix_context = build_fix_context(target, contents, parsed)
 
         # STEP 4: AI proposes a minimal fix (never executes it).

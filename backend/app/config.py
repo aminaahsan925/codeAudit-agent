@@ -131,6 +131,28 @@ class Settings:
     # --- Analyzer thresholds ---
     max_function_lines: int = field(default_factory=lambda: _get_int("CODEAUDIT_MAX_FUNCTION_LINES", 50))
 
+    # --- Live website scan budgets (Phase B) ---
+    # These bound the scanner: pages crawled, requests, timeouts. The scanner
+    # needs scan_config_from_settings() values; previously missing entirely.
+    scan_max_pages: int = field(default_factory=lambda: _get_int("CODEAUDIT_SCAN_MAX_PAGES", 25))
+    scan_max_requests: int = field(default_factory=lambda: _get_int("CODEAUDIT_SCAN_MAX_REQUESTS", 60))
+    scan_request_delay_ms: int = field(default_factory=lambda: _get_int("CODEAUDIT_SCAN_REQUEST_DELAY_MS", 250))
+    scan_timeout_seconds: float = field(default_factory=lambda: _get_float("CODEAUDIT_SCAN_TIMEOUT_SECONDS", 15.0))
+    scan_max_redirects: int = field(default_factory=lambda: _get_int("CODEAUDIT_SCAN_MAX_REDIRECTS", 5))
+    scan_max_response_bytes: int = field(default_factory=lambda: _get_int("CODEAUDIT_SCAN_MAX_RESPONSE_BYTES", 2_000_000))
+    scan_max_seconds: float = field(default_factory=lambda: _get_float("CODEAUDIT_SCAN_MAX_SECONDS", 180.0))
+    scan_allow_localhost: bool = field(default_factory=lambda: _get_bool("CODEAUDIT_SCAN_ALLOW_LOCALHOST", False))
+    scan_tokens: str = field(default_factory=lambda: os.environ.get("CODEAUDIT_SCAN_TOKENS", ""))
+
+    # --- Persistence (Phase 7 job queue + Phase 8 finding lifecycle) ---
+    database_url: str = field(
+        default_factory=lambda: os.environ.get("CODEAUDIT_DATABASE_URL", "sqlite:///codeaudit.db")
+    )
+
+    # --- Knowledge base (fix guidance retrieval) ---
+    kb_max_chunks_per_finding: int = field(default_factory=lambda: _get_int("CODEAUDIT_KB_MAX_CHUNKS", 3))
+    kb_max_chars: int = field(default_factory=lambda: _get_int("CODEAUDIT_KB_MAX_CHARS", 2000))
+
     # --- Misc ---
     log_level: str = field(default_factory=lambda: os.environ.get("CODEAUDIT_LOG_LEVEL", "INFO"))
     app_name: str = "CodeAudit Agent"
