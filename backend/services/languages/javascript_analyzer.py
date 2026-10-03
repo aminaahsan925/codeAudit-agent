@@ -16,15 +16,24 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 
 from models.schemas import Category, CodeSymbol, Confidence, Finding, FindingSource, Severity
 from services.languages.base import LanguageAnalyzer, ParsedSource
+from services.languages.rule_registry import get_rule
+from services.languages.taint import apply_taint, trace_js_sink
 from utils.constants import SECRET_NAME_HINTS, SECRET_PLACEHOLDER_HINTS
 
 logger = logging.getLogger(__name__)
 
 # Grammar packages are imported lazily (see _get_grammar).
 _GRAMMAR_CACHE: dict[str, object] = {}
+
+# tree-sitter Parser instances are stateful and must not be used
+# concurrently from multiple threads. Each thread keeps its own cached
+# parser per language, so repeated parses never pay construction cost
+# while remaining thread-safe.
+_thread_state = threading.local()
 
 _SQL_KEYWORDS = re.compile(r"\b(SELECT|INSERT|UPDATE|DELETE)\b", re.IGNORECASE)
 
@@ -51,6 +60,26 @@ def _get_grammar(language: str):
 
             _GRAMMAR_CACHE[language] = Language(tree_sitter_javascript.language())
     return _GRAMMAR_CACHE[language]
+
+
+def _get_parser(language: str):
+    """Return this thread's cached tree-sitter Parser for a language.
+
+    Parser construction is cheap but needless per file; the cache makes
+    repeated parses reuse one instance. Thread-local because a single
+    Parser must not parse concurrently on two threads.
+    """
+    grammar = _get_grammar(language)
+    parsers = getattr(_thread_state, "parsers", None)
+    if parsers is None:
+        parsers = _thread_state.parsers = {}
+    parser = parsers.get(language)
+    if parser is None:
+        from tree_sitter import Parser
+
+        parser = Parser(grammar)
+        parsers[language] = parser
+    return parser
 
 
 def _text(node, src: bytes) -> str:
@@ -190,7 +219,7 @@ class JavaScriptAnalyzer(LanguageAnalyzer):
 
     def parse_source(self, content: str, relative_path: str) -> ParsedSource:
         try:
-            grammar = _get_grammar(self.language)
+            parser = _get_parser(self.language)
         except ImportError as exc:
             return ParsedSource(
                 relative_path=relative_path,
@@ -198,10 +227,8 @@ class JavaScriptAnalyzer(LanguageAnalyzer):
                 parse_error=f"javascript parser unavailable: {exc}",
             )
         try:
-            from tree_sitter import Parser
-
             src = content.encode("utf-8")
-            tree = Parser(grammar).parse(src)
+            tree = parser.parse(src)
         except Exception as exc:  # noqa: BLE001 - total failure is structural
             logger.debug("Parse failed for %s: %s", relative_path, exc)
             return ParsedSource(
@@ -210,27 +237,39 @@ class JavaScriptAnalyzer(LanguageAnalyzer):
                 parse_error=f"{type(exc).__name__}: {exc}",
             )
         # tree-sitter is error-tolerant: files with syntax errors still yield
-        # a partial tree, which the detectors walk conservatively.
+        # a partial tree, which the detectors walk conservatively. The tree
+        # is retained so analyze_parsed can reuse it instead of re-parsing.
         return ParsedSource(
             relative_path=relative_path,
             language=self.language,
             symbols=_extract_symbols(tree.root_node, src),
+            tree=tree,
         )
 
-    def analyze_file(self, relative_path: str, content: str) -> list[Finding]:
-        try:
-            grammar = _get_grammar(self.language)
-            from tree_sitter import Parser
+    def analyze_parsed(
+        self, relative_path: str, content: str, parsed: ParsedSource
+    ) -> list[Finding]:
+        """Run the detectors on the already-parsed tree.
 
-            src = content.encode("utf-8")
-            tree = Parser(grammar).parse(src)
-        except ImportError:
-            return []  # degraded: parse_source reports the cause structurally
-        except Exception as exc:  # noqa: BLE001 - one bad file must not kill analysis
-            logger.debug("Analysis parse failed for %s: %s", relative_path, exc)
+        Identical findings to analyze_file: same detectors, same
+        per-detector isolation, same deterministic ordering, same IDs.
+        """
+        tree = parsed.tree
+        if tree is None:
+            # Parse failed (or tree-sitter unavailable): the legacy path
+            # re-parsed here and likewise produced no findings.
             return []
         root = tree.root_node
         lines = content.splitlines()
+        src = content.encode("utf-8")
+        return self._run_detectors(root, lines, src, relative_path)
+
+    def analyze_file(self, relative_path: str, content: str) -> list[Finding]:
+        return self.analyze_parsed(
+            relative_path, content, self.parse_source(content, relative_path)
+        )
+
+    def _run_detectors(self, root, lines, src, relative_path) -> list[Finding]:
         findings: list[Finding] = []
         for detector in self._detectors():
             try:
@@ -258,8 +297,10 @@ class JavaScriptAnalyzer(LanguageAnalyzer):
         evidence: str,
         confidence: Confidence,
         suggested_fix: str,
+        sensitive: bool = False,
     ) -> Finding:
         finding_id = f"{detector}:{relative_path}:{line}"
+        rule = get_rule(detector)
         return Finding(
             id=finding_id,
             category=category,
@@ -274,6 +315,11 @@ class JavaScriptAnalyzer(LanguageAnalyzer):
             source=FindingSource.DETERMINISTIC,
             detector=detector,
             language=self.language,
+            # Phase 3: stable rule attribution from the registry.
+            rule_id=rule.rule_id if rule is not None else None,
+            cwe_ids=list(rule.cwe_ids) if rule is not None else [],
+            # Phase 4: secret findings never reach an AI provider.
+            sensitive=sensitive,
         )
 
     def _detectors(self):
@@ -385,29 +431,30 @@ class JavaScriptAnalyzer(LanguageAnalyzer):
             if args_node is None or not args:
                 continue
             if _has_shell_true(args_node, src) or not _is_plain_string(args[0]):
-                findings.append(
-                    self._make_finding(
-                        detector="js_command_injection",
-                        category=Category.SECURITY,
-                        severity=Severity.HIGH,
-                        title="Potential command injection",
-                        description=(
-                            f"child_process.{_method_name(dotted)}() is called with "
-                            "a non-literal command or shell:true, so the command "
-                            "runs through a shell. If any part is "
-                            "attacker-controlled, this is command injection."
-                        ),
-                        relative_path=path,
-                        line=node.start_point[0] + 1,
-                        evidence=_line(lines, node),
-                        confidence=Confidence.HIGH,
-                        suggested_fix=(
-                            "Avoid shell:true; pass arguments as an array to "
-                            "execFile/spawn, and never interpolate untrusted "
-                            "input into a shell command."
-                        ),
-                    )
+                finding = self._make_finding(
+                    detector="js_command_injection",
+                    category=Category.SECURITY,
+                    severity=Severity.HIGH,
+                    title="Potential command injection",
+                    description=(
+                        f"child_process.{_method_name(dotted)}() is called with "
+                        "a non-literal command or shell:true, so the command "
+                        "runs through a shell. If any part is "
+                        "attacker-controlled, this is command injection."
+                    ),
+                    relative_path=path,
+                    line=node.start_point[0] + 1,
+                    evidence=_line(lines, node),
+                    confidence=Confidence.HIGH,
+                    suggested_fix=(
+                        "Avoid shell:true; pass arguments as an array to "
+                        "execFile/spawn, and never interpolate untrusted "
+                        "input into a shell command."
+                    ),
                 )
+                # Phase 3: source-to-sink on the command argument.
+                finding = apply_taint(finding, trace_js_sink(root, node, args[0], src))
+                findings.append(finding)
         return findings
 
     def _detect_xss_dom_sink(self, root, lines, src, path) -> list[Finding]:
@@ -524,7 +571,16 @@ class JavaScriptAnalyzer(LanguageAnalyzer):
         return findings
 
     def _detect_hardcoded_secret(self, root, lines, src, path) -> list[Finding]:
-        """const/let/var with a secret-like name assigned a string literal."""
+        """const/let/var with a secret-like name assigned a string literal.
+
+        Phase 4: evidence is REDACTED, the finding is marked sensitive, and
+        values matching a known token shape defer to the SECRET-002..005
+        detectors (no double-reporting).
+        """
+        # Lazy import: keep module import order free of cycles.
+        from services.supplychain.redaction import redact_line
+        from services.supplychain.secrets import matches_known_token_pattern
+
         findings = []
         for node in _walk(root):
             if node.type != "variable_declarator":
@@ -544,6 +600,8 @@ class JavaScriptAnalyzer(LanguageAnalyzer):
             value = _strip_quotes(_text(value_node, src)).strip()
             if not value or _is_placeholder(value):
                 continue
+            if matches_known_token_pattern(value):
+                continue
             findings.append(
                 self._make_finding(
                     detector="js_hardcoded_secret",
@@ -557,12 +615,13 @@ class JavaScriptAnalyzer(LanguageAnalyzer):
                     ),
                     relative_path=path,
                     line=node.start_point[0] + 1,
-                    evidence=_line(lines, node),
+                    evidence=redact_line(_line(lines, node), [value]),
                     confidence=Confidence.HIGH,
                     suggested_fix=(
                         "Load the secret from an environment variable or a "
                         "secrets manager, and rotate the exposed value."
                     ),
+                    sensitive=True,
                 )
             )
         return findings
@@ -589,27 +648,28 @@ class JavaScriptAnalyzer(LanguageAnalyzer):
                 continue
             if not _SQL_KEYWORDS.search(_text(arg, src)):
                 continue
-            findings.append(
-                self._make_finding(
-                    detector="js_sql_string_construction",
-                    category=Category.SECURITY,
-                    severity=Severity.HIGH,
-                    title="Potential SQL injection",
-                    description=(
-                        "A SQL string is built dynamically (template literal or "
-                        "concatenation) and passed to a database query call. If "
-                        "any part is user-controlled, this is SQL injection."
-                    ),
-                    relative_path=path,
-                    line=node.start_point[0] + 1,
-                    evidence=_line(lines, node),
-                    confidence=Confidence.MEDIUM,
-                    suggested_fix=(
-                        "Use parameterized queries / prepared statements "
-                        "instead of building SQL with string operations."
-                    ),
-                )
+            finding = self._make_finding(
+                detector="js_sql_string_construction",
+                category=Category.SECURITY,
+                severity=Severity.HIGH,
+                title="Potential SQL injection",
+                description=(
+                    "A SQL string is built dynamically (template literal or "
+                    "concatenation) and passed to a database query call. If "
+                    "any part is user-controlled, this is SQL injection."
+                ),
+                relative_path=path,
+                line=node.start_point[0] + 1,
+                evidence=_line(lines, node),
+                confidence=Confidence.MEDIUM,
+                suggested_fix=(
+                    "Use parameterized queries / prepared statements "
+                    "instead of building SQL with string operations."
+                ),
             )
+            # Phase 3: source-to-sink on the SQL argument.
+            finding = apply_taint(finding, trace_js_sink(root, node, arg, src))
+            findings.append(finding)
         return findings
 
     def _detect_weak_crypto(self, root, lines, src, path) -> list[Finding]:
