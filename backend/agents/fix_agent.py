@@ -112,17 +112,30 @@ class FixAgent:
         parsed = ctx.parsed
         fix_context = build_fix_context(finding, repo_contents, parsed)
 
+        # Phase 5: knowledge shown to the model for this finding (system
+        # truth — stamped onto the proposal below). Deterministic per
+        # finding, so the KB version joins the cache key: KB edits must
+        # invalidate cached proposals.
+        from services.knowledge import load_knowledge_base
+
+        shown_knowledge_ids = [h.entry.id for h in fix_context.knowledge]
+        kb_version = load_knowledge_base().version
+
         # Cache check BEFORE the budget check: a cached proposal costs nothing.
         repo_id = f"{ctx.repository.owner}/{ctx.repository.name}"
         # The context text is the bounded evidence the model would see.
-        context_text = f"{fix_context.finding.id}:{fix_context.evidence_window}"
+        context_text = (
+            f"{fix_context.finding.id}:{fix_context.evidence_window}"
+            f":kb={kb_version}:{','.join(shown_knowledge_ids)}"
+        )
         cache_key = make_cache_key(
             repo_id, [finding.id], context_text, CODEAUDIT_REMEDIATION_PROMPT_V1
         )
         cached = self._cache.get(cache_key)
         if cached is not None:
             result = self._from_provider_result(
-                cached, finding, provider, started, cached=True
+                cached, finding, provider, started,
+                cached=True, knowledge_used=shown_knowledge_ids,
             )
             return result
 
@@ -184,7 +197,8 @@ class FixAgent:
 
         self._cache.put(cache_key, provider_result)
         return self._from_provider_result(
-            provider_result, finding, provider, started, cached=False
+            provider_result, finding, provider, started,
+            cached=False, knowledge_used=shown_knowledge_ids,
         )
 
     def _from_provider_result(
@@ -195,8 +209,17 @@ class FixAgent:
         started: float,
         *,
         cached: bool,
+        knowledge_used: list[str] | None = None,
     ) -> FixAgentResult:
         assert provider_result.proposal is not None
+        shown = list(knowledge_used or [])
+        # knowledge_used is system truth (what was shown). knowledge_cited
+        # is the model's claim, validated: only ids that were actually
+        # shown survive — invented citations are dropped, never trusted.
+        cited = [
+            cid for cid in (provider_result.proposal.knowledge_cited or [])
+            if cid in shown
+        ]
         # Traceability is stamped by the system, never trusted from the model.
         proposal = provider_result.proposal.model_copy(
             update={
@@ -205,6 +228,8 @@ class FixAgent:
                 or getattr(provider, "name", ""),
                 "model": provider_result.model or "",
                 "prompt_version": provider_result.prompt_version or "",
+                "knowledge_used": shown,
+                "knowledge_cited": cited,
             }
         )
         status = (
