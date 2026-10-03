@@ -210,7 +210,13 @@ def detect_performance_patterns(
         tree = ast.parse(content)
     except SyntaxError:
         return []
-    lines = content.split("\n")
+    return _detect_performance_on_tree(relative_path, content.split("\n"), tree)
+
+
+def _detect_performance_on_tree(
+    relative_path: str, lines: list[str], tree: ast.AST
+) -> list[Finding]:
+    """Performance rules over an already-parsed tree (no re-parse)."""
     visitor = _LoopVisitor(lines, relative_path)
     visitor.visit(tree)
     return visitor.findings
@@ -222,7 +228,12 @@ class PerformanceAgent:
     name = PERFORMANCE_AGENT
 
     def detect(self, ctx: AgentContext) -> list[Finding]:
-        """Detect performance patterns across parsed Python files."""
+        """Detect performance patterns across parsed Python files.
+
+        Reuses the shared parse trees when the supervisor provides them;
+        falls back to parsing per file when trees are absent (e.g. direct
+        test use of this agent).
+        """
         findings: list[Finding] = []
         for parsed in ctx.parsed:
             if parsed.parse_error:
@@ -233,7 +244,17 @@ class PerformanceAgent:
             content = ctx.scan.contents.get(parsed.relative_path, "")
             if not content:
                 continue
-            findings.extend(detect_performance_patterns(parsed.relative_path, content))
+            tree = ctx.parse_trees.get(parsed.relative_path)
+            if isinstance(tree, ast.AST):
+                findings.extend(
+                    _detect_performance_on_tree(
+                        parsed.relative_path, content.split("\n"), tree
+                    )
+                )
+            else:
+                findings.extend(
+                    detect_performance_patterns(parsed.relative_path, content)
+                )
         findings.sort(key=lambda f: (f.file, f.line, f.detector))
         return findings
 
