@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 
 from app.config import Settings, settings
 from models.schemas import CodeSymbol, Finding, ParsedFile
+from services.knowledge import KnowledgeHit, retrieve_for_finding
 
 
 @dataclass
@@ -28,6 +29,10 @@ class FixContext:
     window_end: int
     enclosing_symbol: str = ""  # e.g. "function get_user (lines 4-12)"
     budget: dict = field(default_factory=dict)
+    # Phase 5: curated knowledge hits for this finding (knowledge-only:
+    # guidance for the fix proposal, never evidence). Empty for sensitive
+    # findings — retrieval returns nothing for them by construction.
+    knowledge: list["KnowledgeHit"] = field(default_factory=list)
 
 
 def _numbered(lines: list[str], start: int) -> str:
@@ -94,6 +99,17 @@ def build_fix_context(
             break
 
     truncated = (lo > 1) or (hi < total)
+    # Phase 4: a sensitive finding's evidence window must not carry the raw
+    # secret to the AI provider. Redact known token shapes on every window
+    # line, and force the evidence line itself to the finding's redacted
+    # evidence (the raw value never appears in a finding).
+    if finding.sensitive:
+        from services.supplychain.secrets import redact_known_tokens_in_text
+
+        window = [redact_known_tokens_in_text(w) for w in window]
+        evidence_idx = finding.line - lo
+        if 0 <= evidence_idx < len(window):
+            window[evidence_idx] = finding.evidence
     context = FixContext(
         finding=finding,
         file_path=finding.file,
@@ -112,5 +128,13 @@ def build_fix_context(
             if pf.relative_path == finding.file and not pf.parse_error:
                 context.enclosing_symbol = _enclosing_symbol(pf.symbols, finding.line)
                 break
+
+    # Phase 5: curated knowledge for the fix proposal (knowledge-only,
+    # deterministic, no AI call). Retrieval returns [] for sensitive
+    # findings, so secret material can never gain a knowledge section.
+    knowledge = retrieve_for_finding(finding, cfg)
+    context.knowledge = knowledge
+    context.budget["knowledge_chunks"] = len(knowledge)
+    context.budget["knowledge_ids"] = [h.entry.id for h in knowledge]
 
     return context
