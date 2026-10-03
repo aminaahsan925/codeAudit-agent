@@ -121,6 +121,10 @@ class FindingFusionAgent:
                     updates["prompt_version"] = enriched.prompt_version
                 if enriched.suggested_fix and not current.suggested_fix:
                     updates["suggested_fix"] = enriched.suggested_fix
+                # Phase 5: knowledge provenance follows the same path as AI
+                # reasoning — it records what the model saw, nothing more.
+                if enriched.knowledge_used:
+                    updates["knowledge_used"] = list(enriched.knowledge_used)
                 if updates:
                     fused[key] = current.model_copy(update=updates)
                 reviewed_ids.add(current.id)
