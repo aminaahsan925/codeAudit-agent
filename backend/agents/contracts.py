@@ -48,6 +48,12 @@ class AgentContext:
     mode: str  # "free" | "economy" | "full"
     scan: "ScanResult"
     parsed: list["ParsedFile"] = field(default_factory=list)
+    # Native parse trees keyed by relative path (ast.Module for Python,
+    # tree-sitter Tree for JavaScript/TypeScript), shared so specialist
+    # agents can run AST rules without re-parsing. Internal to the analysis
+    # stage: never serialized, read-only for agents. Empty when the caller
+    # did not retain trees.
+    parse_trees: dict[str, Any] = field(default_factory=dict)
     validated_findings: list[ValidatedFinding] = field(default_factory=list)
     shared: "SharedRepositoryContext | None" = None
     budget: "AIBudgetManager | None" = None
