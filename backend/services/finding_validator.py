@@ -8,6 +8,12 @@ prove itself against the actual repository content:
 
 A finding that fails any check is dropped from the validated set (reported
 separately as unverified) rather than silently passed through.
+
+Phase 4: findings marked ``sensitive`` (secret material) carry redacted
+evidence by design, so the verbatim substring check cannot apply. For
+those, every literal fragment of the redacted evidence must appear in
+order in the cited line — anchoring the finding without ever requiring
+the raw secret value.
 """
 
 from __future__ import annotations
@@ -29,6 +35,30 @@ class ValidationResult:
 
 def _normalize(text: str) -> str:
     return " ".join(text.split())
+
+
+def _redacted_contains(actual: str, claimed: str) -> bool:
+    """Redaction-aware evidence check for sensitive findings.
+
+    The claimed evidence contains ``****`` redactions, so it can never be
+    a verbatim substring of the real line. Instead, split the claim on the
+    redaction marker and require every literal fragment to appear in the
+    actual line, in order, with at least one non-empty fragment. This
+    proves the finding is anchored to the cited line without ever
+    requiring the raw secret value.
+    """
+    from services.supplychain.redaction import REDACTION_MARKER
+
+    fragments = [frag for frag in claimed.split(REDACTION_MARKER) if frag.strip()]
+    if not fragments:
+        return False
+    pos = 0
+    for frag in fragments:
+        idx = actual.find(frag, pos)
+        if idx == -1:
+            return False
+        pos = idx + len(frag)
+    return True
 
 
 def validate_findings(
@@ -56,7 +86,20 @@ def validate_findings(
         # whitespace-insensitively. The reverse containment (the real line
         # being a substring of the claimed evidence) is NOT accepted: it would
         # let hallucinated extra text ride along with a genuine line.
-        if not claimed or claimed not in actual:
+        #
+        # Phase 4: sensitive findings carry REDACTED evidence (the raw secret
+        # never appears in a finding). For those, a verbatim substring check
+        # is impossible by design; instead every literal fragment of the
+        # redacted evidence must appear in order in the real line.
+        if not claimed:
+            result.dropped.append(finding)
+            result.drop_reasons["evidence_mismatch"] = result.drop_reasons.get("evidence_mismatch", 0) + 1
+            continue
+        if finding.sensitive:
+            ok = _redacted_contains(actual, claimed)
+        else:
+            ok = claimed in actual
+        if not ok:
             result.dropped.append(finding)
             result.drop_reasons["evidence_mismatch"] = result.drop_reasons.get("evidence_mismatch", 0) + 1
             continue
