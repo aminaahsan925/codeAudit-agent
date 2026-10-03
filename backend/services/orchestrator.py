@@ -85,13 +85,27 @@ class AnalysisOrchestrator:
         github_service.clone_repository(ref, dest)
         return ref
 
-    def scan_files(self, repo_dir: Path) -> ScanResult:
-        return repository_scanner.scan_repository(repo_dir)
+    def scan_files(
+        self, repo_dir: Path, deadline: float | None = None
+    ) -> ScanResult:
+        return repository_scanner.scan_repository(repo_dir, deadline=deadline)
 
-    def parse(self, scan: ScanResult) -> tuple[list[ParsedFile], int]:
+    def parse(
+        self, scan: ScanResult, deadline: float | None = None
+    ) -> tuple[list[ParsedFile], dict[str, ParsedSource], int]:
+        """Parse every deep-analysis file.
+
+        Returns (parsed_files, parsed_sources, failed_count). The
+        ``parsed_sources`` map (relative_path -> ParsedSource, carrying the
+        native parse tree) is passed to :meth:`analyze_static` so analysis
+        reuses the already-parsed trees instead of parsing every file a
+        second time.
+        """
         parsed: list[ParsedFile] = []
+        sources: dict[str, ParsedSource] = {}
         failed = 0
         for analyzed in scan.files:
+            repository_scanner.check_deadline(deadline)
             # Per-language routing through the analyzer registry. Python
             # behavior is unchanged: the Python analyzer delegates to the
             # same code_parser / static_analyzer modules as before.
@@ -100,6 +114,7 @@ class AnalysisOrchestrator:
                 continue
             content = scan.contents.get(analyzed.relative_path, "")
             source: ParsedSource = analyzer.parse_source(content, analyzed.relative_path)
+            sources[source.relative_path] = source
             result = ParsedFile(
                 relative_path=source.relative_path,
                 language=source.language,
@@ -109,16 +124,57 @@ class AnalysisOrchestrator:
             if result.parse_error:
                 failed += 1
             parsed.append(result)
-        return parsed, failed
+        return parsed, sources, failed
 
-    def analyze_static(self, scan: ScanResult) -> list[Finding]:
+    def analyze_static(
+        self,
+        scan: ScanResult,
+        sources: dict[str, ParsedSource] | None = None,
+        deadline: float | None = None,
+    ) -> list[Finding]:
+        """Run deterministic detectors over every deep-analysis file.
+
+        When ``sources`` (from :meth:`parse`) is given, each analyzer
+        consumes the already-parsed tree instead of re-parsing the file.
+        Without it, each file is parsed once inside ``analyze_file`` —
+        the legacy behavior, kept for standalone/test use.
+
+        Phase 4: after the language analyzers, the supply-chain stage runs
+        on every scanned file (secret detection is cross-cutting; manifest /
+        Dockerfile / workflow / compose analyzers run by file kind). The
+        advisory source is built once per call, not per file.
+        """
+        from services.supplychain.dispatch import (
+            analyze_supplychain_file,
+            get_advisory_source,
+        )
+
         findings: list[Finding] = []
         for analyzed in scan.files:
+            repository_scanner.check_deadline(deadline)
             analyzer = get_analyzer(analyzed.language)
             if analyzer is None:
                 continue
             content = scan.contents.get(analyzed.relative_path, "")
-            findings.extend(analyzer.analyze_file(analyzed.relative_path, content))
+            source = sources.get(analyzed.relative_path) if sources else None
+            if source is not None:
+                findings.extend(
+                    analyzer.analyze_parsed(analyzed.relative_path, content, source)
+                )
+            else:
+                findings.extend(analyzer.analyze_file(analyzed.relative_path, content))
+        # Phase 4: supply-chain stage (never breaks the language results).
+        advisory_source = get_advisory_source()
+        for analyzed in scan.files:
+            repository_scanner.check_deadline(deadline)
+            content = scan.contents.get(analyzed.relative_path, "")
+            if not content:
+                continue
+            findings.extend(
+                analyze_supplychain_file(
+                    analyzed.relative_path, content, advisory_source
+                )
+            )
         findings.sort(key=lambda f: (f.file, f.line, f.detector))
         return findings
 
@@ -225,13 +281,33 @@ class AnalysisOrchestrator:
 
     def _analyze(self, repo_dir: Path, repository: RepositoryMetadata) -> AnalysisResult:
         """Shared pipeline core: scan -> parse -> analyze -> validate -> score."""
-        scan = self.scan_files(repo_dir)
-        parsed, failed_parse = self.parse(scan)
-        deep_analyzed = sum(1 for p in parsed if p.parse_error is None)
-        unsupported = sum(
-            1 for a in scan.files if not supports_deep_analysis(a.language)
+        deadline = repository_scanner.analysis_deadline()
+        scan = self.scan_files(repo_dir, deadline=deadline)
+        parsed, sources, failed_parse = self.parse(scan, deadline=deadline)
+        # Phase 4: files covered by a structural supply-chain analyzer
+        # (manifests, Dockerfiles, workflows, compose files) count as
+        # deep-analyzed rather than unsupported. Secret scanning is a
+        # cross-cutting pass over every file and does not change buckets.
+        from services.supplychain.dispatch import (
+            get_advisory_source,
+            supplychain_covered_files,
         )
-        raw_findings = self.analyze_static(scan)
+        from services.supplychain.sbom import build_sbom_for_scan
+
+        sc_covered = supplychain_covered_files(
+            [a.relative_path for a in scan.files]
+        )
+        parsed_paths = {p.relative_path for p in parsed}
+        deep_analyzed = sum(1 for p in parsed if p.parse_error is None) + len(
+            sc_covered - parsed_paths
+        )
+        unsupported = sum(
+            1
+            for a in scan.files
+            if not supports_deep_analysis(a.language)
+            and a.relative_path not in sc_covered
+        )
+        raw_findings = self.analyze_static(scan, sources, deadline=deadline)
         validated, dropped = self.validate_findings(raw_findings, scan)
         # Phase 2: optional Nemotron reasoning over the deterministic evidence.
         # Degrades gracefully — deterministic findings always survive.
@@ -267,6 +343,19 @@ class AnalysisOrchestrator:
             risk=risk,
             ai=ai_status,
         )
+        # Phase 4: SBOM attached to the result metadata. Built from the same
+        # manifest parsers as dependency analysis; advisory status recorded
+        # inside the SBOM so consumers see data freshness.
+        try:
+            advisory_source = get_advisory_source()
+            result.sbom = build_sbom_for_scan(
+                scan.contents,
+                repository,
+                advisory_status=advisory_source.status,
+                advisory_generated_at=advisory_source.generated_at,
+            )
+        except Exception:  # noqa: BLE001 — SBOM must never break analysis
+            logger.exception("SBOM generation failed; continuing without it")
         logger.info(
             "Analysis completed: %d scanned (%d deep-analyzed, %d unsupported, "
             "%d skipped, %d failed parse), %d findings, risk %d/10 (%s), "
