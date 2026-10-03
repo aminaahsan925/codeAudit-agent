@@ -137,7 +137,14 @@ def build_ai_context(
         dist[analyzed.language or "unknown"] = dist.get(analyzed.language or "unknown", 0) + 1
     context.language_distribution = dist
 
-    in_scope = list(findings)[: max(0, cfg.ai_max_findings)]
+    # Phase 4: secret findings NEVER reach the model. Their evidence is
+    # redacted, but the surrounding source lines in a context block could
+    # still carry the raw secret — so sensitive findings are excluded from
+    # the finding list AND their files are excluded from every source
+    # block below. The redacted finding itself is still sent (it carries
+    # no secret material), so the model can reason about the issue class.
+    secret_files = {f.file for f in findings if f.sensitive}
+    in_scope = [f for f in findings if not f.sensitive][: max(0, cfg.ai_max_findings)]
     context.findings = in_scope
 
     chars_used = 0
@@ -162,6 +169,8 @@ def build_ai_context(
     # --- Priority 1: surrounding source for each deterministic finding ------
     ranges_by_file: dict[str, list[tuple[int, int]]] = {}
     for finding in in_scope:
+        if finding.file in secret_files:
+            continue
         content = scan.contents.get(finding.file)
         if not content:
             continue
@@ -204,7 +213,7 @@ def build_ai_context(
     # --- Priority 2: entry-point-like files --------------------------------
     for analyzed in sorted(scan.files, key=lambda a: a.relative_path):
         path = analyzed.relative_path
-        if path in ranges_by_file or not _is_entrypoint(path):
+        if path in ranges_by_file or path in secret_files or not _is_entrypoint(path):
             continue
         content = scan.contents.get(path)
         if not content:
@@ -227,6 +236,8 @@ def build_ai_context(
             if target and target not in ranges_by_file:
                 import_targets.append(target)
     for target in sorted(set(import_targets)):
+        if target in secret_files:
+            continue
         content = scan.contents.get(target)
         if not content:
             continue
@@ -241,6 +252,7 @@ def build_ai_context(
         "files_limit": max_files,
         "findings_included": len(in_scope),
         "findings_total": len(findings),
+        "findings_excluded_sensitive": sum(1 for f in findings if f.sensitive),
         "truncated": truncated,
     }
     return context
