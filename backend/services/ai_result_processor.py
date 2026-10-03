@@ -9,12 +9,14 @@ Rules (documented, deterministic):
 ASSESSMENT APPLICATION (enrichment of deterministic findings):
   * An assessment must reference a known deterministic finding id;
     unknown ids and duplicate assessments are ignored (counted).
-  * verdict "confirmed" -> attach ai_reasoning + suggested_fix (if given).
-  * verdict "uncertain"  -> attach reasoning, demote confidence ONE step.
-  * verdict "unlikely"   -> attach reasoning, demote confidence to low.
+  * Every verdict ("confirmed", "uncertain", "unlikely") attaches the AI's
+    reasoning and suggested_fix (if given) for transparency.
   * NEVER changed by AI: id, file, line, evidence, severity, detector,
-    source. AI enriches; it never rewrites the evidence anchor and never
-    deletes a deterministic finding (fail-closed).
+    source, confidence. AI enriches; it never rewrites the evidence anchor,
+    never deletes a deterministic finding, and never downgrades a
+    deterministic confidence merely because it disagrees (Phase 3, §7.5).
+    The verdict and reasoning are recorded in ai_reasoning so reviewers
+    can see the disagreement without the finding being suppressed.
 
 DEDUPLICATION (AI candidates vs deterministic findings):
   * Match key: same normalized file + same category + |line diff| <= 2.
@@ -39,8 +41,6 @@ from dataclasses import dataclass, field
 from models.schemas import (
     AIAssessment,
     AIFindingCandidate,
-    AIVerdict,
-    Confidence,
     Finding,
     FindingSource,
 )
@@ -54,13 +54,6 @@ AI_DETECTOR_NAME = "nemotron_security_v1"
 # Lines within this distance, same file + category, are considered the same
 # underlying issue for deduplication purposes.
 DEDUP_LINE_TOLERANCE = 2
-
-_CONFIDENCE_ORDER = [Confidence.HIGH, Confidence.MEDIUM, Confidence.LOW]
-
-
-def _demote_one_step(confidence: Confidence) -> Confidence:
-    idx = _CONFIDENCE_ORDER.index(confidence)
-    return _CONFIDENCE_ORDER[min(idx + 1, len(_CONFIDENCE_ORDER) - 1)]
 
 
 def _normalize_path(path: str) -> str:
@@ -89,16 +82,14 @@ class MergedAIResults:
 
 
 def _apply_one_assessment(finding: Finding, assessment: AIAssessment) -> Finding:
+    # Phase 3 (§7.5): the AI's verdict is recorded, never applied as a
+    # downgrade. Confidence and severity are deterministic-only.
     updates: dict = {
         "ai_reasoning": assessment.reasoning,
         "prompt_version": finding.prompt_version,
     }
     if assessment.suggested_fix:
         updates["suggested_fix"] = assessment.suggested_fix
-    if assessment.verdict == AIVerdict.UNCERTAIN:
-        updates["confidence"] = _demote_one_step(finding.confidence)
-    elif assessment.verdict == AIVerdict.UNLIKELY:
-        updates["confidence"] = Confidence.LOW
     return finding.model_copy(update=updates)
 
 
